@@ -295,13 +295,18 @@ func run(args options) {
 		BindPort:     config.BindPort,
 		BetaBindPort: config.BetaBindPort,
 
-		ReadTimeout:       ReadTimeout,
-		ReadHeaderTimeout: ReadHeaderTimeout,
-		WriteTimeout:      WriteTimeout,
+		ReadTimeout:       readTimeout,
+		ReadHeaderTimeout: readHdrTimeout,
+		WriteTimeout:      writeTimeout,
 	}
 	Context.web = CreateWeb(&webConf)
 	if Context.web == nil {
 		log.Fatalf("Can't initialize Web module")
+	}
+
+	Context.ipDetector, err = newIPDetector()
+	if err != nil {
+		log.Fatal(err)
 	}
 
 	if !Context.firstRun {
@@ -315,6 +320,7 @@ func run(args options) {
 		go func() {
 			err := startDNSServer()
 			if err != nil {
+				closeDNSServer()
 				log.Fatal(err)
 			}
 		}()
@@ -322,11 +328,6 @@ func run(args options) {
 		if Context.dhcpServer != nil {
 			_ = Context.dhcpServer.Start()
 		}
-	}
-
-	Context.ipDetector, err = newIPDetector()
-	if err != nil {
-		log.Fatal(err)
 	}
 
 	Context.web.Start()

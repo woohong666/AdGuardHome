@@ -79,12 +79,12 @@ type V6ServerConf struct {
 
 	// The first IP address for dynamic leases
 	// The last allowed IP address ends with 0xff byte
-	RangeStart net.IP `yaml:"range_start"`
+	RangeStart net.IP `yaml:"range_start" json:"range_start"`
 
 	LeaseDuration uint32 `yaml:"lease_duration" json:"lease_duration"` // in seconds
 
-	RaSlaacOnly  bool `yaml:"ra_slaac_only" json:"-"`  // send ICMPv6.RA packets without MO flags
-	RaAllowSlaac bool `yaml:"ra_allow_slaac" json:"-"` // send ICMPv6.RA packets with MO flags
+	RASLAACOnly  bool `yaml:"ra_slaac_only" json:"-"`  // send ICMPv6.RA packets without MO flags
+	RAAllowSLAAC bool `yaml:"ra_allow_slaac" json:"-"` // send ICMPv6.RA packets with MO flags
 
 	ipStart    net.IP        // starting IP address for dynamic leases
 	leaseTime  time.Duration // the time during which a dynamic lease is considered valid

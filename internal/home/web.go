@@ -16,17 +16,14 @@ import (
 )
 
 const (
-	// ReadTimeout is the maximum duration for reading the entire request,
+	// readTimeout is the maximum duration for reading the entire request,
 	// including the body.
-	ReadTimeout = 10 * time.Second
-
-	// ReadHeaderTimeout is the amount of time allowed to read request
-	// headers.
-	ReadHeaderTimeout = 10 * time.Second
-
-	// WriteTimeout is the maximum duration before timing out writes of the
+	readTimeout = 60 * time.Second
+	// readHdrTimeout is the amount of time allowed to read request headers.
+	readHdrTimeout = 60 * time.Second
+	// writeTimeout is the maximum duration before timing out writes of the
 	// response.
-	WriteTimeout = 10 * time.Second
+	writeTimeout = 60 * time.Second
 )
 
 type webConfig struct {
@@ -191,7 +188,10 @@ func (web *Web) Start() {
 				WriteTimeout:      web.conf.WriteTimeout,
 			}
 			go func() {
-				errs <- web.httpServerBeta.ListenAndServe()
+				betaErr := web.httpServerBeta.ListenAndServe()
+				if betaErr != nil {
+					log.Error("starting beta http server: %s", betaErr)
+				}
 			}()
 		}
 
@@ -259,7 +259,7 @@ func (web *Web) tlsServerLoop() {
 				RootCAs:      Context.tlsRoots,
 				CipherSuites: Context.tlsCiphers,
 			},
-			Handler:           Context.mux,
+			Handler:           withMiddlewares(Context.mux, limitRequestBody),
 			ReadTimeout:       web.conf.ReadTimeout,
 			ReadHeaderTimeout: web.conf.ReadHeaderTimeout,
 			WriteTimeout:      web.conf.WriteTimeout,

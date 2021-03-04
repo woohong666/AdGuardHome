@@ -17,6 +17,7 @@ import (
 	"github.com/AdguardTeam/AdGuardHome/internal/dnsforward"
 	"github.com/AdguardTeam/AdGuardHome/internal/util"
 	"github.com/AdguardTeam/dnsproxy/proxy"
+	"github.com/AdguardTeam/dnsproxy/upstream"
 	"github.com/AdguardTeam/golibs/log"
 	"github.com/AdguardTeam/golibs/utils"
 )
@@ -295,7 +296,12 @@ func (clients *clientsContainer) FindUpstreams(ip string) *proxy.UpstreamConfig 
 	}
 
 	if c.upstreamConfig == nil {
-		config, err := proxy.ParseUpstreamsConfig(c.Upstreams, config.DNS.BootstrapDNS, dnsforward.DefaultTimeout)
+		config, err := proxy.ParseUpstreamsConfig(c.Upstreams,
+			upstream.Options{
+				Bootstrap: config.DNS.BootstrapDNS,
+				Timeout:   dnsforward.DefaultTimeout,
+			},
+		)
 		if err == nil {
 			c.upstreamConfig = &config
 		}
@@ -580,9 +586,22 @@ func (clients *clientsContainer) SetWhoisInfo(ip string, info [][]string) {
 	log.Debug("clients: set whois info for auto-client with IP %s: %q", ip, info)
 }
 
+// sanitizeHost proccesses a host to remove some special symbols causing errors.
+// Logic may be expanded in the future.
+func sanitizeHost(host string) (processed string) {
+	// cutset brings together all the deprecated sets.
+	//
+	// See https://github.com/AdguardTeam/AdGuardHome/issues/2582.
+	const cutset = "\x00"
+
+	return strings.TrimRight(host, cutset)
+}
+
 // AddHost adds a new IP-hostname pairing.  The priorities of the sources is
 // taken into account.  ok is true if the pairing was added.
 func (clients *clientsContainer) AddHost(ip, host string, src clientSource) (ok bool, err error) {
+	host = sanitizeHost(host)
+
 	clients.lock.Lock()
 	ok = clients.addHostLocked(ip, host, src)
 	clients.lock.Unlock()

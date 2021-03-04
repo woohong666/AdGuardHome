@@ -14,14 +14,78 @@ and this project adheres to
 -->
 
 <!--
-## [v0.105.1] - 2021-02-24
+## [v0.105.2] - 2021-03-04
 -->
 
 ### Fixed
 
-- Incorrect version tag in the Docker release ([#2663]).
+- Incomplete hostnames with trailing zero-bytes handling ([#2582]).
+- Wrong DNS-over-TLS ALPN configuration ([#2681]).
+- Inconsistent responses for messages with EDNS0 and AD when DNS caching is
+  enabled ([#2600]).
+- Incomplete OpenWRT detection ([#2757]).
+- DHCP lease's `expired` field incorrect time format ([#2692]).
+- Incomplete DNS upstreams validation ([#2674]).
+- Wrong parsing of DHCP options of the `ip` type ([#2688]).
 
+[#2582]: https://github.com/AdguardTeam/AdGuardHome/issues/2582
+[#2600]: https://github.com/AdguardTeam/AdGuardHome/issues/2600
+[#2674]: https://github.com/AdguardTeam/AdGuardHome/issues/2674
+[#2681]: https://github.com/AdguardTeam/AdGuardHome/issues/2681
+[#2688]: https://github.com/AdguardTeam/AdGuardHome/issues/2688
+[#2692]: https://github.com/AdguardTeam/AdGuardHome/issues/2692
+[#2757]: https://github.com/AdguardTeam/AdGuardHome/issues/2757
+
+### Security
+
+- Session token doesn't contain user's information anymore ([#2470]).
+
+[#2470]: https://github.com/AdguardTeam/AdGuardHome/issues/2470
+
+
+
+## [v0.105.1] - 2021-02-15
+
+### Changed
+
+- Increased HTTP API timeouts ([#2671], [#2682]).
+- "Permission denied" errors when checking if the machine has a static IP no
+  longer prevent the DHCP server from starting ([#2667]).
+- The server name sent by clients of TLS APIs is not only checked when
+  `strict_sni_check` is enabled ([#2664]).
+- HTTP API request body size limit for the `POST /control/access/set` and `POST
+  /control/filtering/set_rules` HTTP APIs is increased ([#2666], [#2675]).
+
+### Fixed
+
+- Error when enabling the DHCP server when AdGuard Home couldn't determine if
+  the machine has a static IP.
+- Optical issue on custom rules ([#2641]).
+- Occasional crashes during startup.
+- The field `"range_start"` in the `GET /control/dhcp/status` HTTP API response
+  is now correctly named again ([#2678]).
+- DHCPv6 server's `ra_slaac_only` and `ra_allow_slaac` settings aren't reset to
+  `false` on update any more ([#2653]).
+- The `Vary` header is now added along with `Access-Control-Allow-Origin` to
+  prevent cache-related and other issues in browsers ([#2658]).
+- The request body size limit is now set for HTTPS requests as well.
+- Incorrect version tag in the Docker release ([#2663]).
+- DNSCrypt queries weren't marked as such in logs ([#2662]).
+
+[#2641]: https://github.com/AdguardTeam/AdGuardHome/issues/2641
+[#2653]: https://github.com/AdguardTeam/AdGuardHome/issues/2653
+[#2658]: https://github.com/AdguardTeam/AdGuardHome/issues/2658
+[#2662]: https://github.com/AdguardTeam/AdGuardHome/issues/2662
 [#2663]: https://github.com/AdguardTeam/AdGuardHome/issues/2663
+[#2664]: https://github.com/AdguardTeam/AdGuardHome/issues/2664
+[#2666]: https://github.com/AdguardTeam/AdGuardHome/issues/2666
+[#2667]: https://github.com/AdguardTeam/AdGuardHome/issues/2667
+[#2671]: https://github.com/AdguardTeam/AdGuardHome/issues/2671
+[#2675]: https://github.com/AdguardTeam/AdGuardHome/issues/2675
+[#2678]: https://github.com/AdguardTeam/AdGuardHome/issues/2678
+[#2682]: https://github.com/AdguardTeam/AdGuardHome/issues/2682
+
+
 
 ## [v0.105.0] - 2021-02-10
 
@@ -161,10 +225,12 @@ and this project adheres to
 
 
 <!--
+[Unreleased]: https://github.com/AdguardTeam/AdGuardHome/compare/v0.105.2...HEAD
+[v0.105.2]:   https://github.com/AdguardTeam/AdGuardHome/compare/v0.105.1...v0.105.2
+-->
+
 [Unreleased]: https://github.com/AdguardTeam/AdGuardHome/compare/v0.105.1...HEAD
 [v0.105.1]:   https://github.com/AdguardTeam/AdGuardHome/compare/v0.105.0...v0.105.1
--->
-[Unreleased]: https://github.com/AdguardTeam/AdGuardHome/compare/v0.105.0...HEAD
 [v0.105.0]:   https://github.com/AdguardTeam/AdGuardHome/compare/v0.104.3...v0.105.0
 [v0.104.3]:   https://github.com/AdguardTeam/AdGuardHome/compare/v0.104.2...v0.104.3
 [v0.104.2]:   https://github.com/AdguardTeam/AdGuardHome/compare/v0.104.1...v0.104.2

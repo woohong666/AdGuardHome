@@ -21,7 +21,11 @@ import (
 const maxConfigFileSize = 1024 * 1024
 
 func ifaceHasStaticIP(ifaceName string) (has bool, err error) {
-	var f *os.File
+	// TODO(a.garipov): Currently, this function returns the first
+	// definitive result.  So if /etc/dhcpcd.conf has a static IP while
+	// /etc/network/interfaces doesn't, it will return true.  Perhaps this
+	// is not the most desirable behavior.
+
 	for _, check := range []struct {
 		checker  func(io.Reader, string) (bool, error)
 		filePath string
@@ -32,28 +36,37 @@ func ifaceHasStaticIP(ifaceName string) (has bool, err error) {
 		checker:  ifacesStaticConfig,
 		filePath: "/etc/network/interfaces",
 	}} {
+		var f *os.File
 		f, err = os.Open(check.filePath)
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
 		if err != nil {
+			// ErrNotExist can happen here if there is no such file.
+			// This is normal, as not every system uses those files.
+			if errors.Is(err, os.ErrNotExist) {
+				err = nil
+
+				continue
+			}
+
 			return false, err
 		}
 		defer f.Close()
 
-		fileReadCloser, err := aghio.LimitReadCloser(f, maxConfigFileSize)
+		var fileReadCloser io.ReadCloser
+		fileReadCloser, err = aghio.LimitReadCloser(f, maxConfigFileSize)
 		if err != nil {
 			return false, err
 		}
 		defer fileReadCloser.Close()
 
 		has, err = check.checker(fileReadCloser, ifaceName)
-		if has || err != nil {
-			break
+		if err != nil {
+			return false, err
 		}
+
+		return has, nil
 	}
 
-	return has, err
+	return false, ErrNoStaticIPInfo
 }
 
 // dhcpcdStaticConfig checks if interface is configured by /etc/dhcpcd.conf to

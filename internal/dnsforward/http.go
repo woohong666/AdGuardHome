@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/AdguardTeam/dnsproxy/proxy"
 	"github.com/AdguardTeam/dnsproxy/upstream"
 	"github.com/AdguardTeam/golibs/log"
 	"github.com/AdguardTeam/golibs/utils"
@@ -149,7 +150,7 @@ func (req *dnsConfig) checkBootstrap() (string, error) {
 			return boot, fmt.Errorf("invalid bootstrap server address: empty")
 		}
 
-		if _, err := upstream.NewResolver(boot, 0); err != nil {
+		if _, err := upstream.NewResolver(boot, upstream.Options{Timeout: 0}); err != nil {
 			return boot, fmt.Errorf("invalid bootstrap server address: %w", err)
 		}
 	}
@@ -312,6 +313,16 @@ func ValidateUpstreams(upstreams []string) error {
 	// Consider this case valid because defaultDNS will be used
 	if len(upstreams) == 0 {
 		return nil
+	}
+
+	_, err := proxy.ParseUpstreamsConfig(upstreams,
+		upstream.Options{
+			Bootstrap: []string{},
+			Timeout:   DefaultTimeout,
+		},
+	)
+	if err != nil {
+		return err
 	}
 
 	var defaultUpstreamFound bool
