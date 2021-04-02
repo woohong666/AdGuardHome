@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/AdguardTeam/AdGuardHome/internal/aghnet"
 	"github.com/AdguardTeam/AdGuardHome/internal/dhcpd"
 	"github.com/AdguardTeam/AdGuardHome/internal/dnsfilter"
 	"github.com/AdguardTeam/AdGuardHome/internal/querylog"
@@ -56,7 +57,13 @@ type Server struct {
 	stats      stats.Stats
 	access     *accessCtx
 
-	ipset ipsetCtx
+	// autohostSuffix is the suffix used to detect internal hosts.  It must
+	// be a valid top-level domain plus dots on each side.
+	autohostSuffix string
+
+	ipset          ipsetCtx
+	subnetDetector *aghnet.SubnetDetector
+	localResolvers aghnet.Exchanger
 
 	tableHostToIP     map[string]net.IP // "hostname -> IP" table for internal addresses (DHCP)
 	tableHostToIPLock sync.Mutex
@@ -74,21 +81,54 @@ type Server struct {
 	conf ServerConfig
 }
 
-// DNSCreateParams - parameters for NewServer()
+// defaultAutohostSuffix is the default suffix used to detect internal hosts
+// when no suffix is provided.  See the documentation for Server.autohostSuffix.
+const defaultAutohostSuffix = ".lan."
+
+// DNSCreateParams are parameters to create a new server.
 type DNSCreateParams struct {
-	DNSFilter  *dnsfilter.DNSFilter
-	Stats      stats.Stats
-	QueryLog   querylog.QueryLog
-	DHCPServer dhcpd.ServerInterface
+	DNSFilter      *dnsfilter.DNSFilter
+	Stats          stats.Stats
+	QueryLog       querylog.QueryLog
+	DHCPServer     dhcpd.ServerInterface
+	SubnetDetector *aghnet.SubnetDetector
+	LocalResolvers aghnet.Exchanger
+	AutohostTLD    string
+}
+
+// tldToSuffix converts a top-level domain into an autohost suffix.
+func tldToSuffix(tld string) (suffix string) {
+	l := len(tld) + 2
+	b := make([]byte, l)
+	b[0] = '.'
+	copy(b[1:], tld)
+	b[l-1] = '.'
+
+	return string(b)
 }
 
 // NewServer creates a new instance of the dnsforward.Server
 // Note: this function must be called only once
-func NewServer(p DNSCreateParams) *Server {
-	s := &Server{
-		dnsFilter: p.DNSFilter,
-		stats:     p.Stats,
-		queryLog:  p.QueryLog,
+func NewServer(p DNSCreateParams) (s *Server, err error) {
+	var autohostSuffix string
+	if p.AutohostTLD == "" {
+		autohostSuffix = defaultAutohostSuffix
+	} else {
+		err = validateDomainNameLabel(p.AutohostTLD)
+		if err != nil {
+			return nil, fmt.Errorf("autohost tld: %w", err)
+		}
+
+		autohostSuffix = tldToSuffix(p.AutohostTLD)
+	}
+
+	s = &Server{
+		dnsFilter:      p.DNSFilter,
+		stats:          p.Stats,
+		queryLog:       p.QueryLog,
+		subnetDetector: p.SubnetDetector,
+		localResolvers: p.LocalResolvers,
+		autohostSuffix: autohostSuffix,
 	}
 
 	if p.DHCPServer != nil {
@@ -101,7 +141,8 @@ func NewServer(p DNSCreateParams) *Server {
 		// Use plain DNS on MIPS, encryption is too slow
 		defaultDNS = defaultBootstrap
 	}
-	return s
+
+	return s, nil
 }
 
 // NewCustomServer creates a new instance of *Server with custom internal proxy.

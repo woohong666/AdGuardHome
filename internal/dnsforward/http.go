@@ -209,7 +209,10 @@ func (s *Server) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.setConfig(req) {
+	restart := s.setConfig(req)
+	s.conf.ConfigModified()
+
+	if restart {
 		if err := s.Reconfigure(nil); err != nil {
 			httpError(r, w, http.StatusInternalServerError, "%s", err)
 			return
@@ -217,9 +220,7 @@ func (s *Server) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) setConfig(dc dnsConfig) (restart bool) {
-	s.Lock()
-
+func (s *Server) setConfigRestartable(dc dnsConfig) (restart bool) {
 	if dc.Upstreams != nil {
 		s.conf.UpstreamDNS = *dc.Upstreams
 		restart = true
@@ -235,36 +236,14 @@ func (s *Server) setConfig(dc dnsConfig) (restart bool) {
 		restart = true
 	}
 
-	if dc.ProtectionEnabled != nil {
-		s.conf.ProtectionEnabled = *dc.ProtectionEnabled
-	}
-
-	if dc.BlockingMode != nil {
-		s.conf.BlockingMode = *dc.BlockingMode
-		if *dc.BlockingMode == "custom_ip" {
-			s.conf.BlockingIPv4 = dc.BlockingIPv4.To4()
-			s.conf.BlockingIPv6 = dc.BlockingIPv6.To16()
-		}
-	}
-
 	if dc.RateLimit != nil {
-		if s.conf.Ratelimit != *dc.RateLimit {
-			restart = true
-		}
+		restart = restart || s.conf.Ratelimit != *dc.RateLimit
 		s.conf.Ratelimit = *dc.RateLimit
 	}
 
 	if dc.EDNSCSEnabled != nil {
 		s.conf.EnableEDNSClientSubnet = *dc.EDNSCSEnabled
 		restart = true
-	}
-
-	if dc.DNSSECEnabled != nil {
-		s.conf.EnableDNSSEC = *dc.DNSSECEnabled
-	}
-
-	if dc.DisableIPv6 != nil {
-		s.conf.AAAADisabled = *dc.DisableIPv6
 	}
 
 	if dc.CacheSize != nil {
@@ -282,22 +261,39 @@ func (s *Server) setConfig(dc dnsConfig) (restart bool) {
 		restart = true
 	}
 
-	if dc.UpstreamMode != nil {
-		switch *dc.UpstreamMode {
-		case "parallel":
-			s.conf.AllServers = true
-			s.conf.FastestAddr = false
-		case "fastest_addr":
-			s.conf.AllServers = false
-			s.conf.FastestAddr = true
-		default:
-			s.conf.AllServers = false
-			s.conf.FastestAddr = false
+	return restart
+}
+
+func (s *Server) setConfig(dc dnsConfig) (restart bool) {
+	s.Lock()
+	defer s.Unlock()
+
+	if dc.ProtectionEnabled != nil {
+		s.conf.ProtectionEnabled = *dc.ProtectionEnabled
+	}
+
+	if dc.BlockingMode != nil {
+		s.conf.BlockingMode = *dc.BlockingMode
+		if *dc.BlockingMode == "custom_ip" {
+			s.conf.BlockingIPv4 = dc.BlockingIPv4.To4()
+			s.conf.BlockingIPv6 = dc.BlockingIPv6.To16()
 		}
 	}
-	s.Unlock()
-	s.conf.ConfigModified()
-	return restart
+
+	if dc.DNSSECEnabled != nil {
+		s.conf.EnableDNSSEC = *dc.DNSSECEnabled
+	}
+
+	if dc.DisableIPv6 != nil {
+		s.conf.AAAADisabled = *dc.DisableIPv6
+	}
+
+	if dc.UpstreamMode != nil {
+		s.conf.AllServers = *dc.UpstreamMode == "parallel"
+		s.conf.FastestAddr = *dc.UpstreamMode == "fastest_addr"
+	}
+
+	return s.setConfigRestartable(dc)
 }
 
 type upstreamJSON struct {
@@ -315,7 +311,8 @@ func ValidateUpstreams(upstreams []string) error {
 		return nil
 	}
 
-	_, err := proxy.ParseUpstreamsConfig(upstreams,
+	_, err := proxy.ParseUpstreamsConfig(
+		upstreams,
 		upstream.Options{
 			Bootstrap: []string{},
 			Timeout:   DefaultTimeout,
@@ -327,18 +324,17 @@ func ValidateUpstreams(upstreams []string) error {
 
 	var defaultUpstreamFound bool
 	for _, u := range upstreams {
-		d, err := validateUpstream(u)
+		var ok bool
+		ok, err = validateUpstream(u)
 		if err != nil {
 			return err
 		}
 
-		// Check this flag until default upstream will not be found
 		if !defaultUpstreamFound {
-			defaultUpstreamFound = d
+			defaultUpstreamFound = ok
 		}
 	}
 
-	// Return error if there are no default upstreams
 	if !defaultUpstreamFound {
 		return fmt.Errorf("no default upstreams specified")
 	}
@@ -476,7 +472,7 @@ func checkDNS(input string, bootstrap []string) error {
 		return nil
 	}
 
-	if _, err := validateUpstream(input); err != nil {
+	if _, err = validateUpstream(input); err != nil {
 		return fmt.Errorf("wrong upstream format: %w", err)
 	}
 

@@ -22,12 +22,13 @@ import (
 	"time"
 
 	"github.com/AdguardTeam/AdGuardHome/internal/agherr"
+	"github.com/AdguardTeam/AdGuardHome/internal/aghnet"
+	"github.com/AdguardTeam/AdGuardHome/internal/aghos"
 	"github.com/AdguardTeam/AdGuardHome/internal/dhcpd"
 	"github.com/AdguardTeam/AdGuardHome/internal/dnsfilter"
 	"github.com/AdguardTeam/AdGuardHome/internal/dnsforward"
 	"github.com/AdguardTeam/AdGuardHome/internal/querylog"
 	"github.com/AdguardTeam/AdGuardHome/internal/stats"
-	"github.com/AdguardTeam/AdGuardHome/internal/sysutil"
 	"github.com/AdguardTeam/AdGuardHome/internal/updater"
 	"github.com/AdguardTeam/AdGuardHome/internal/util"
 	"github.com/AdguardTeam/AdGuardHome/internal/version"
@@ -60,7 +61,9 @@ type homeContext struct {
 	autoHosts  util.AutoHosts       // IP-hostname pairs taken from system configuration (e.g. /etc/hosts) files
 	updater    *updater.Updater
 
-	ipDetector *ipDetector
+	subnetDetector  *aghnet.SubnetDetector
+	systemResolvers aghnet.SystemResolvers
+	localResolvers  aghnet.Exchanger
 
 	// mux is our custom http.ServeMux.
 	mux *http.ServeMux
@@ -204,7 +207,7 @@ func setupConfig(args options) {
 
 	if (runtime.GOOS == "linux" || runtime.GOOS == "darwin") &&
 		config.RlimitNoFile != 0 {
-		sysutil.SetRlimit(config.RlimitNoFile)
+		aghos.SetRlimit(config.RlimitNoFile)
 	}
 
 	// override bind host/port from the console
@@ -216,6 +219,110 @@ func setupConfig(args options) {
 	}
 	if len(args.pidFile) != 0 && writePIDFile(args.pidFile) {
 		Context.pidFileName = args.pidFile
+	}
+}
+
+const defaultLocalTimeout = 5 * time.Second
+
+// stringsSetSubtract subtracts b from a interpreted as sets.
+//
+// TODO(e.burkov): Move into our internal package for working with strings.
+func stringsSetSubtract(a, b []string) (c []string) {
+	// unit is an object to be used as value in set.
+	type unit = struct{}
+
+	cSet := make(map[string]unit)
+	for _, k := range a {
+		cSet[k] = unit{}
+	}
+
+	for _, k := range b {
+		delete(cSet, k)
+	}
+
+	c = make([]string, len(cSet))
+	i := 0
+	for k := range cSet {
+		c[i] = k
+		i++
+	}
+
+	return c
+}
+
+// collectAllIfacesAddrs returns the slice of all network interfaces IP
+// addresses without port number.
+func collectAllIfacesAddrs() (addrs []string, err error) {
+	var ifaces []net.Interface
+	ifaces, err = net.Interfaces()
+	if err != nil {
+		return nil, fmt.Errorf("getting network interfaces: %w", err)
+	}
+
+	for _, iface := range ifaces {
+		var ifaceAddrs []net.Addr
+		ifaceAddrs, err = iface.Addrs()
+		if err != nil {
+			return nil, fmt.Errorf("getting addresses for %q: %w", iface.Name, err)
+		}
+
+		for _, addr := range ifaceAddrs {
+			cidr := addr.String()
+			var ip net.IP
+			ip, _, err = net.ParseCIDR(cidr)
+			if err != nil {
+				return nil, fmt.Errorf("parsing %q as cidr: %w", cidr, err)
+			}
+
+			addrs = append(addrs, ip.String())
+		}
+	}
+
+	return addrs, nil
+}
+
+// collectDNSIPAddrs returns the slice of IP addresses without port number which
+// we are listening on.
+func collectDNSIPaddrs() (addrs []string, err error) {
+	addrs = make([]string, len(config.DNS.BindHosts))
+
+	for i, bh := range config.DNS.BindHosts {
+		if bh.IsUnspecified() {
+			return collectAllIfacesAddrs()
+		}
+
+		addrs[i] = bh.String()
+	}
+
+	return addrs, nil
+}
+
+func setupResolvers() {
+	// TODO(e.burkov): Enhance when the config will contain local resolvers
+	// addresses.
+
+	sysRes, err := aghnet.NewSystemResolvers(0, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	Context.systemResolvers = sysRes
+
+	var ourAddrs []string
+	ourAddrs, err = collectDNSIPaddrs()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// TODO(e.burkov): The approach of subtracting sets of strings is not
+	// really applicable here since in case of listening on all network
+	// interfaces we should check the whole interface's network to cut off
+	// all the loopback addresses as well.
+	addrs := stringsSetSubtract(sysRes.Get(), ourAddrs)
+
+	Context.localResolvers, err = aghnet.NewMultiAddrExchanger(addrs, defaultLocalTimeout)
+	if err != nil {
+		log.Fatal(err)
 	}
 }
 
@@ -265,8 +372,8 @@ func run(args options) {
 			mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 			go func() {
 				log.Info("pprof: listening on localhost:6060")
-				err := http.ListenAndServe("localhost:6060", mux)
-				log.Error("Error while running the pprof server: %s", err)
+				lerr := http.ListenAndServe("localhost:6060", mux)
+				log.Error("Error while running the pprof server: %s", lerr)
 			}()
 		}
 	}
@@ -304,24 +411,27 @@ func run(args options) {
 		log.Fatalf("Can't initialize Web module")
 	}
 
-	Context.ipDetector, err = newIPDetector()
+	Context.subnetDetector, err = aghnet.NewSubnetDetector()
 	if err != nil {
 		log.Fatal(err)
 	}
 
+	setupResolvers()
+
 	if !Context.firstRun {
-		err := initDNSServer()
+		err = initDNSServer()
 		if err != nil {
 			log.Fatalf("%s", err)
 		}
+
 		Context.tls.Start()
 		Context.autoHosts.Start()
 
 		go func() {
-			err := startDNSServer()
-			if err != nil {
+			serr := startDNSServer()
+			if serr != nil {
 				closeDNSServer()
-				log.Fatal(err)
+				log.Fatal(serr)
 			}
 		}()
 
@@ -360,7 +470,7 @@ func checkPermissions() {
 	if runtime.GOOS == "windows" {
 		// On Windows we need to have admin rights to run properly
 
-		admin, _ := sysutil.HaveAdminRights()
+		admin, _ := aghos.HaveAdminRights()
 		if admin {
 			return
 		}
@@ -369,17 +479,15 @@ func checkPermissions() {
 	}
 
 	// We should check if AdGuard Home is able to bind to port 53
-	ok, err := util.CanBindPort(53)
+	ok, err := aghnet.CanBindPort(53)
 
 	if ok {
 		log.Info("AdGuard Home can bind to port 53")
 		return
 	}
 
-	if opErr, ok := err.(*net.OpError); ok {
-		if sysErr, ok := opErr.Err.(*os.SyscallError); ok {
-			if errno, ok := sysErr.Err.(syscall.Errno); ok && errno == syscall.EACCES {
-				msg := `Permission check failed.
+	if errors.Is(err, os.ErrPermission) {
+		msg := `Permission check failed.
 
 AdGuard Home is not allowed to bind to privileged ports (for instance, port 53).
 Please note, that this is crucial for a server to be able to use privileged ports.
@@ -389,9 +497,7 @@ You have two options:
 2. On Linux you can grant the CAP_NET_BIND_SERVICE capability:
 https://github.com/AdguardTeam/AdGuardHome/internal/wiki/Getting-Started#running-without-superuser`
 
-				log.Fatal(msg)
-			}
-		}
+		log.Fatal(msg)
 	}
 
 	msg := fmt.Sprintf(`AdGuard failed to bind to port 53 due to %v
@@ -437,9 +543,12 @@ func initWorkingDir(args options) {
 		Context.workDir = filepath.Dir(execPath)
 	}
 
-	if workDir, err := filepath.EvalSymlinks(Context.workDir); err == nil {
-		Context.workDir = workDir
+	workDir, err := filepath.EvalSymlinks(Context.workDir)
+	if err != nil {
+		panic(err)
 	}
+
+	Context.workDir = workDir
 }
 
 // configureLogger configures logger level and output
@@ -481,7 +590,7 @@ func configureLogger(args options) {
 
 	if ls.LogFile == configSyslog {
 		// Use syslog where it is possible and eventlog on Windows
-		err := sysutil.ConfigureSyslog(serviceName)
+		err := aghos.ConfigureSyslog(serviceName)
 		if err != nil {
 			log.Fatalf("cannot initialize syslog: %s", err)
 		}
@@ -570,8 +679,8 @@ func loadOptions() options {
 	return o
 }
 
-// prints IP addresses which user can use to open the admin interface
-// proto is either "http" or "https"
+// printHTTPAddresses prints the IP addresses which user can use to open the
+// admin interface.  proto is either schemeHTTP or schemeHTTPS.
 func printHTTPAddresses(proto string) {
 	tlsConf := tlsConfigSettings{}
 	if Context.tls != nil {
@@ -579,12 +688,12 @@ func printHTTPAddresses(proto string) {
 	}
 
 	port := strconv.Itoa(config.BindPort)
-	if proto == "https" {
+	if proto == schemeHTTPS {
 		port = strconv.Itoa(tlsConf.PortHTTPS)
 	}
 
 	var hostStr string
-	if proto == "https" && tlsConf.ServerName != "" {
+	if proto == schemeHTTPS && tlsConf.ServerName != "" {
 		if tlsConf.PortHTTPS == 443 {
 			log.Printf("Go to https://%s", tlsConf.ServerName)
 		} else {
@@ -592,7 +701,7 @@ func printHTTPAddresses(proto string) {
 		}
 	} else if config.BindHost.IsUnspecified() {
 		log.Println("AdGuard Home is available on the following addresses:")
-		ifaces, err := util.GetValidNetInterfacesForWeb()
+		ifaces, err := aghnet.GetValidNetInterfacesForWeb()
 		if err != nil {
 			// That's weird, but we'll ignore it
 			hostStr = config.BindHost.String()
@@ -634,7 +743,7 @@ func detectFirstRun() bool {
 }
 
 // Connect to a remote server resolving hostname using our own DNS server
-func customDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+func customDialContext(ctx context.Context, network, addr string) (conn net.Conn, err error) {
 	log.Tracef("network:%v  addr:%v", network, addr)
 
 	host, port, err := net.SplitHostPort(addr)
@@ -647,14 +756,13 @@ func customDialContext(ctx context.Context, network, addr string) (net.Conn, err
 	}
 
 	if net.ParseIP(host) != nil || config.DNS.Port == 0 {
-		con, err := dialer.DialContext(ctx, network, addr)
-		return con, err
+		return dialer.DialContext(ctx, network, addr)
 	}
 
-	addrs, e := Context.dnsServer.Resolve(host)
+	addrs, err := Context.dnsServer.Resolve(host)
 	log.Debug("dnsServer.Resolve: %s: %v", host, addrs)
-	if e != nil {
-		return nil, e
+	if err != nil {
+		return nil, err
 	}
 
 	if len(addrs) == 0 {
@@ -664,13 +772,16 @@ func customDialContext(ctx context.Context, network, addr string) (net.Conn, err
 	var dialErrs []error
 	for _, a := range addrs {
 		addr = net.JoinHostPort(a.String(), port)
-		con, err := dialer.DialContext(ctx, network, addr)
+		conn, err = dialer.DialContext(ctx, network, addr)
 		if err != nil {
 			dialErrs = append(dialErrs, err)
+
 			continue
 		}
-		return con, err
+
+		return conn, err
 	}
+
 	return nil, agherr.Many(fmt.Sprintf("couldn't dial to %s", addr), dialErrs...)
 }
 

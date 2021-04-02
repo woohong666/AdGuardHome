@@ -4,6 +4,7 @@ package dhcpd
 
 import (
 	"encoding/json"
+	"errors"
 	"io/ioutil"
 	"net"
 	"os"
@@ -39,9 +40,10 @@ func (s *Server) dbLoad() {
 
 	data, err := ioutil.ReadFile(s.conf.DBFilePath)
 	if err != nil {
-		if !os.IsNotExist(err) {
-			log.Error("DHCP: can't read file %s: %v", s.conf.DBFilePath, err)
+		if !errors.Is(err, os.ErrNotExist) {
+			log.Error("dhcp: can't read file %q: %v", s.conf.DBFilePath, err)
 		}
+
 		return
 	}
 
@@ -126,7 +128,7 @@ func normalizeLeases(staticLeases, dynLeases []*Lease) []*Lease {
 func (s *Server) dbStore() {
 	var leases []leaseJSON
 
-	leases4 := s.srv4.GetLeasesRef()
+	leases4 := s.srv4.getLeasesRef()
 	for _, l := range leases4 {
 		if l.Expiry.Unix() == 0 {
 			continue
@@ -141,7 +143,7 @@ func (s *Server) dbStore() {
 	}
 
 	if s.srv6 != nil {
-		leases6 := s.srv6.GetLeasesRef()
+		leases6 := s.srv6.getLeasesRef()
 		for _, l := range leases6 {
 			if l.Expiry.Unix() == 0 {
 				continue

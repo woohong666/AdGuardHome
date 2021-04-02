@@ -6,41 +6,11 @@ package util
 
 import (
 	"bytes"
-	"fmt"
 	"io/ioutil"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 )
-
-// ContainsString checks if string is in the slice of strings.
-func ContainsString(strs []string, str string) bool {
-	for _, s := range strs {
-		if s == str {
-			return true
-		}
-	}
-	return false
-}
-
-// FileExists returns true if file exists.
-func FileExists(fn string) bool {
-	_, err := os.Stat(fn)
-	return err == nil || !os.IsNotExist(err)
-}
-
-// RunCommand runs shell command.
-func RunCommand(command string, arguments ...string) (int, string, error) {
-	cmd := exec.Command(command, arguments...)
-	out, err := cmd.Output()
-	if err != nil {
-		return 1, "", fmt.Errorf("exec.Command(%s) failed: %v: %s", command, err, string(out))
-	}
-
-	return cmd.ProcessState.ExitCode(), string(out), nil
-}
 
 // SplitNext - split string by a byte and return the first chunk
 // Skip empty chunks
@@ -66,8 +36,8 @@ func SplitNext(str *string, splitBy byte) string {
 	return strings.TrimSpace(s)
 }
 
-// IsOpenWRT returns true if host OS is OpenWRT.
-func IsOpenWRT() bool {
+// IsOpenWrt returns true if host OS is OpenWrt.
+func IsOpenWrt() bool {
 	if runtime.GOOS != "linux" {
 		return false
 	}
@@ -94,7 +64,8 @@ func IsOpenWRT() bool {
 			continue
 		}
 
-		body, err := ioutil.ReadFile(filepath.Join(etcDir, fileInfo.Name()))
+		var body []byte
+		body, err = ioutil.ReadFile(filepath.Join(etcDir, fileInfo.Name()))
 		if err != nil {
 			continue
 		}

@@ -9,22 +9,29 @@ import (
 	"github.com/AdguardTeam/urlfilter/rules"
 	"github.com/miekg/dns"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestServer_FilterDNSRewrite(t *testing.T) {
 	// Helper data.
+	const domain = "example.com"
 	ip4 := net.IP{127, 0, 0, 1}
 	ip6 := net.IP{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
-	mx := &rules.DNSMX{
+	mxVal := &rules.DNSMX{
 		Exchange:   "mail.example.com",
 		Preference: 32,
 	}
-	svcb := &rules.DNSSVCB{
+	svcbVal := &rules.DNSSVCB{
 		Params:   map[string]string{"alpn": "h3"},
-		Target:   "example.com",
+		Target:   dns.Fqdn(domain),
 		Priority: 32,
 	}
-	const domain = "example.com"
+	srvVal := &rules.DNSSRV{
+		Priority: 32,
+		Weight:   60,
+		Port:     8080,
+		Target:   dns.Fqdn(domain),
+	}
 
 	// Helper functions and entities.
 	srv := &Server{}
@@ -54,7 +61,8 @@ func TestServer_FilterDNSRewrite(t *testing.T) {
 		d := &proxy.DNSContext{}
 
 		err := srv.filterDNSRewrite(req, res, d)
-		assert.Nil(t, err)
+
+		require.Nil(t, err)
 		assert.Equal(t, dns.RcodeNameError, d.Res.Rcode)
 	})
 
@@ -64,7 +72,7 @@ func TestServer_FilterDNSRewrite(t *testing.T) {
 		d := &proxy.DNSContext{}
 
 		err := srv.filterDNSRewrite(req, res, d)
-		assert.Nil(t, err)
+		require.Nil(t, err)
 		assert.Equal(t, dns.RcodeSuccess, d.Res.Rcode)
 		assert.Empty(t, d.Res.Answer)
 	})
@@ -75,11 +83,11 @@ func TestServer_FilterDNSRewrite(t *testing.T) {
 		d := &proxy.DNSContext{}
 
 		err := srv.filterDNSRewrite(req, res, d)
-		assert.Nil(t, err)
+		require.Nil(t, err)
 		assert.Equal(t, dns.RcodeSuccess, d.Res.Rcode)
-		if assert.Len(t, d.Res.Answer, 1) {
-			assert.Equal(t, ip4, d.Res.Answer[0].(*dns.A).A)
-		}
+
+		require.Len(t, d.Res.Answer, 1)
+		assert.Equal(t, ip4, d.Res.Answer[0].(*dns.A).A)
 	})
 
 	t.Run("noerror_aaaa", func(t *testing.T) {
@@ -88,11 +96,11 @@ func TestServer_FilterDNSRewrite(t *testing.T) {
 		d := &proxy.DNSContext{}
 
 		err := srv.filterDNSRewrite(req, res, d)
-		assert.Nil(t, err)
+		require.Nil(t, err)
 		assert.Equal(t, dns.RcodeSuccess, d.Res.Rcode)
-		if assert.Len(t, d.Res.Answer, 1) {
-			assert.Equal(t, ip6, d.Res.Answer[0].(*dns.AAAA).AAAA)
-		}
+
+		require.Len(t, d.Res.Answer, 1)
+		assert.Equal(t, ip6, d.Res.Answer[0].(*dns.AAAA).AAAA)
 	})
 
 	t.Run("noerror_ptr", func(t *testing.T) {
@@ -101,11 +109,11 @@ func TestServer_FilterDNSRewrite(t *testing.T) {
 		d := &proxy.DNSContext{}
 
 		err := srv.filterDNSRewrite(req, res, d)
-		assert.Nil(t, err)
+		require.Nil(t, err)
 		assert.Equal(t, dns.RcodeSuccess, d.Res.Rcode)
-		if assert.Len(t, d.Res.Answer, 1) {
-			assert.Equal(t, domain, d.Res.Answer[0].(*dns.PTR).Ptr)
-		}
+
+		require.Len(t, d.Res.Answer, 1)
+		assert.Equal(t, dns.Fqdn(domain), d.Res.Answer[0].(*dns.PTR).Ptr)
 	})
 
 	t.Run("noerror_txt", func(t *testing.T) {
@@ -114,65 +122,84 @@ func TestServer_FilterDNSRewrite(t *testing.T) {
 		d := &proxy.DNSContext{}
 
 		err := srv.filterDNSRewrite(req, res, d)
-		assert.Nil(t, err)
+		require.Nil(t, err)
 		assert.Equal(t, dns.RcodeSuccess, d.Res.Rcode)
-		if assert.Len(t, d.Res.Answer, 1) {
-			assert.Equal(t, []string{domain}, d.Res.Answer[0].(*dns.TXT).Txt)
-		}
+
+		require.Len(t, d.Res.Answer, 1)
+		assert.Equal(t, []string{domain}, d.Res.Answer[0].(*dns.TXT).Txt)
 	})
 
 	t.Run("noerror_mx", func(t *testing.T) {
 		req := makeQ(dns.TypeMX)
-		res := makeRes(dns.RcodeSuccess, dns.TypeMX, mx)
+		res := makeRes(dns.RcodeSuccess, dns.TypeMX, mxVal)
 		d := &proxy.DNSContext{}
 
 		err := srv.filterDNSRewrite(req, res, d)
-		assert.Nil(t, err)
+		require.Nil(t, err)
 		assert.Equal(t, dns.RcodeSuccess, d.Res.Rcode)
-		if assert.Len(t, d.Res.Answer, 1) {
-			ans, ok := d.Res.Answer[0].(*dns.MX)
-			if assert.True(t, ok) {
-				assert.Equal(t, mx.Exchange, ans.Mx)
-				assert.Equal(t, mx.Preference, ans.Preference)
-			}
-		}
+
+		require.Len(t, d.Res.Answer, 1)
+		ans, ok := d.Res.Answer[0].(*dns.MX)
+
+		require.True(t, ok)
+		assert.Equal(t, dns.Fqdn(mxVal.Exchange), ans.Mx)
+		assert.Equal(t, mxVal.Preference, ans.Preference)
 	})
 
 	t.Run("noerror_svcb", func(t *testing.T) {
 		req := makeQ(dns.TypeSVCB)
-		res := makeRes(dns.RcodeSuccess, dns.TypeSVCB, svcb)
+		res := makeRes(dns.RcodeSuccess, dns.TypeSVCB, svcbVal)
 		d := &proxy.DNSContext{}
 
 		err := srv.filterDNSRewrite(req, res, d)
-		assert.Nil(t, err)
+		require.Nil(t, err)
 		assert.Equal(t, dns.RcodeSuccess, d.Res.Rcode)
-		if assert.Len(t, d.Res.Answer, 1) {
-			ans, ok := d.Res.Answer[0].(*dns.SVCB)
-			if assert.True(t, ok) {
-				assert.Equal(t, dns.SVCB_ALPN, ans.Value[0].Key())
-				assert.Equal(t, svcb.Params["alpn"], ans.Value[0].String())
-				assert.Equal(t, svcb.Target, ans.Target)
-				assert.Equal(t, svcb.Priority, ans.Priority)
-			}
-		}
+
+		require.Len(t, d.Res.Answer, 1)
+		ans, ok := d.Res.Answer[0].(*dns.SVCB)
+		require.True(t, ok)
+
+		assert.Equal(t, dns.SVCB_ALPN, ans.Value[0].Key())
+		assert.Equal(t, svcbVal.Params["alpn"], ans.Value[0].String())
+		assert.Equal(t, svcbVal.Target, ans.Target)
+		assert.Equal(t, svcbVal.Priority, ans.Priority)
 	})
 
 	t.Run("noerror_https", func(t *testing.T) {
 		req := makeQ(dns.TypeHTTPS)
-		res := makeRes(dns.RcodeSuccess, dns.TypeHTTPS, svcb)
+		res := makeRes(dns.RcodeSuccess, dns.TypeHTTPS, svcbVal)
 		d := &proxy.DNSContext{}
 
 		err := srv.filterDNSRewrite(req, res, d)
-		assert.Nil(t, err)
+		require.Nil(t, err)
 		assert.Equal(t, dns.RcodeSuccess, d.Res.Rcode)
-		if assert.Len(t, d.Res.Answer, 1) {
-			ans, ok := d.Res.Answer[0].(*dns.HTTPS)
-			if assert.True(t, ok) {
-				assert.Equal(t, dns.SVCB_ALPN, ans.Value[0].Key())
-				assert.Equal(t, svcb.Params["alpn"], ans.Value[0].String())
-				assert.Equal(t, svcb.Target, ans.Target)
-				assert.Equal(t, svcb.Priority, ans.Priority)
-			}
-		}
+
+		require.Len(t, d.Res.Answer, 1)
+		ans, ok := d.Res.Answer[0].(*dns.HTTPS)
+
+		require.True(t, ok)
+		assert.Equal(t, dns.SVCB_ALPN, ans.Value[0].Key())
+		assert.Equal(t, svcbVal.Params["alpn"], ans.Value[0].String())
+		assert.Equal(t, svcbVal.Target, ans.Target)
+		assert.Equal(t, svcbVal.Priority, ans.Priority)
+	})
+
+	t.Run("noerror_srv", func(t *testing.T) {
+		req := makeQ(dns.TypeSRV)
+		res := makeRes(dns.RcodeSuccess, dns.TypeSRV, srvVal)
+		d := &proxy.DNSContext{}
+
+		err := srv.filterDNSRewrite(req, res, d)
+		require.Nil(t, err)
+		assert.Equal(t, dns.RcodeSuccess, d.Res.Rcode)
+
+		require.Len(t, d.Res.Answer, 1)
+		ans, ok := d.Res.Answer[0].(*dns.SRV)
+
+		require.True(t, ok)
+		assert.Equal(t, srvVal.Priority, ans.Priority)
+		assert.Equal(t, srvVal.Weight, ans.Weight)
+		assert.Equal(t, srvVal.Port, ans.Port)
+		assert.Equal(t, srvVal.Target, ans.Target)
 	})
 }

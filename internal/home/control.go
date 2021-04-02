@@ -2,7 +2,6 @@ package home
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -11,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/AdguardTeam/AdGuardHome/internal/aghnet"
 	"github.com/AdguardTeam/AdGuardHome/internal/dnsforward"
 	"github.com/AdguardTeam/AdGuardHome/internal/version"
 	"github.com/AdguardTeam/golibs/log"
@@ -34,15 +34,79 @@ func httpError(w http.ResponseWriter, code int, format string, args ...interface
 	http.Error(w, text, code)
 }
 
-// ---------------
-// dns run control
-// ---------------
-func addDNSAddress(dnsAddresses *[]string, addr net.IP) {
-	hostport := addr.String()
-	if config.DNS.Port != 53 {
-		hostport = net.JoinHostPort(hostport, strconv.Itoa(config.DNS.Port))
+// appendDNSAddrs is a convenient helper for appending a formatted form of DNS
+// addresses to a slice of strings.
+func appendDNSAddrs(dst []string, addrs ...net.IP) (res []string) {
+	for _, addr := range addrs {
+		hostport := addr.String()
+		if config.DNS.Port != 53 {
+			hostport = net.JoinHostPort(hostport, strconv.Itoa(config.DNS.Port))
+		}
+
+		dst = append(dst, hostport)
 	}
-	*dnsAddresses = append(*dnsAddresses, hostport)
+
+	return dst
+}
+
+// appendDNSAddrsWithIfaces formats and appends all DNS addresses from src to
+// dst.  It also adds the IP addresses of all network interfaces if src contains
+// an unspecified IP addresss.
+func appendDNSAddrsWithIfaces(dst []string, src []net.IP) (res []string, err error) {
+	ifacesAdded := false
+	for _, h := range src {
+		if !h.IsUnspecified() {
+			dst = appendDNSAddrs(dst, h)
+
+			continue
+		} else if ifacesAdded {
+			continue
+		}
+
+		// Add addresses of all network interfaces for addresses like
+		// "0.0.0.0" and "::".
+		var ifaces []*aghnet.NetInterface
+		ifaces, err = aghnet.GetValidNetInterfacesForWeb()
+		if err != nil {
+			return nil, fmt.Errorf("cannot get network interfaces: %w", err)
+		}
+
+		for _, iface := range ifaces {
+			dst = appendDNSAddrs(dst, iface.Addresses...)
+		}
+
+		ifacesAdded = true
+	}
+
+	return dst, nil
+}
+
+// collectDNSAddresses returns the list of DNS addresses the server is listening
+// on, including the addresses on all interfaces in cases of unspecified IPs.
+func collectDNSAddresses() (addrs []string, err error) {
+	if hosts := config.DNS.BindHosts; len(hosts) == 0 {
+		addrs = appendDNSAddrs(addrs, net.IP{127, 0, 0, 1})
+	} else {
+		addrs, err = appendDNSAddrsWithIfaces(addrs, hosts)
+		if err != nil {
+			return nil, fmt.Errorf("collecting dns addresses: %w", err)
+		}
+	}
+
+	de := getDNSEncryption()
+	if de.https != "" {
+		addrs = append(addrs, de.https)
+	}
+
+	if de.tls != "" {
+		addrs = append(addrs, de.tls)
+	}
+
+	if de.quic != "" {
+		addrs = append(addrs, de.quic)
+	}
+
+	return addrs, nil
 }
 
 // statusResponse is a response for /control/status endpoint.
@@ -60,8 +124,17 @@ type statusResponse struct {
 }
 
 func handleStatus(w http.ResponseWriter, _ *http.Request) {
+	dnsAddrs, err := collectDNSAddresses()
+	if err != nil {
+		// Don't add a lot of formatting, since the error is already
+		// wrapped by collectDNSAddresses.
+		httpError(w, http.StatusInternalServerError, "%s", err)
+
+		return
+	}
+
 	resp := statusResponse{
-		DNSAddrs:  getDNSAddresses(),
+		DNSAddrs:  dnsAddrs,
 		DNSPort:   config.DNS.Port,
 		HTTPPort:  config.BindPort,
 		IsRunning: isRunning(),
@@ -82,9 +155,10 @@ func handleStatus(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	err := json.NewEncoder(w).Encode(resp)
+	err = json.NewEncoder(w).Encode(resp)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "Unable to write response json: %s", err)
+
 		return
 	}
 }
@@ -213,22 +287,11 @@ func handleHTTPSRedirect(w http.ResponseWriter, r *http.Request) (ok bool) {
 		return true
 	}
 
-	host, _, err := net.SplitHostPort(r.Host)
+	host, err := aghnet.SplitHost(r.Host)
 	if err != nil {
-		// Check for the missing port error.  If it is that error, just
-		// use the host as is.
-		//
-		// See the source code for net.SplitHostPort.
-		const missingPort = "missing port in address"
+		httpError(w, http.StatusBadRequest, "bad host: %s", err)
 
-		addrErr := &net.AddrError{}
-		if !errors.As(err, &addrErr) || addrErr.Err != missingPort {
-			httpError(w, http.StatusBadRequest, "bad host: %s", err)
-
-			return false
-		}
-
-		host = r.Host
+		return false
 	}
 
 	if r.TLS == nil && web.forceHTTPS {
@@ -239,7 +302,7 @@ func handleHTTPSRedirect(w http.ResponseWriter, r *http.Request) (ok bool) {
 		}
 
 		httpsURL := &url.URL{
-			Scheme:   "https",
+			Scheme:   schemeHTTPS,
 			Host:     hostPort,
 			Path:     r.URL.Path,
 			RawQuery: r.URL.RawQuery,
@@ -255,7 +318,7 @@ func handleHTTPSRedirect(w http.ResponseWriter, r *http.Request) (ok bool) {
 	//
 	// See https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Allow-Origin.
 	originURL := &url.URL{
-		Scheme: "http",
+		Scheme: schemeHTTP,
 		Host:   r.Host,
 	}
 	w.Header().Set("Access-Control-Allow-Origin", originURL.String())

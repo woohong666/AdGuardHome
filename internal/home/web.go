@@ -9,10 +9,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/AdguardTeam/AdGuardHome/internal/util"
+	"github.com/AdguardTeam/AdGuardHome/internal/aghnet"
 	"github.com/AdguardTeam/golibs/log"
 	"github.com/NYTimes/gziphandler"
 	"github.com/gobuffalo/packr"
+)
+
+// HTTP scheme constants.
+const (
+	schemeHTTP  = "http"
+	schemeHTTPS = "https"
 )
 
 const (
@@ -111,7 +117,7 @@ func WebCheckPortAvailable(port int) bool {
 		alreadyRunning = true
 	}
 	if !alreadyRunning {
-		err := util.CheckPortAvailable(config.BindHost, port)
+		err := aghnet.CheckPortAvailable(config.BindHost, port)
 		if err != nil {
 			return false
 		}
@@ -141,13 +147,11 @@ func (web *Web) TLSConfigChanged(ctx context.Context, tlsConf tlsConfigSettings)
 
 	web.httpsServer.cond.L.Lock()
 	if web.httpsServer.server != nil {
-		ctx, cancel := context.WithTimeout(ctx, shutdownTimeout)
-		err = web.httpsServer.server.Shutdown(ctx)
-		cancel()
-		if err != nil {
-			log.Debug("error while shutting down HTTP server: %s", err)
-		}
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, shutdownTimeout)
+		shutdownSrv(ctx, cancel, web.httpsServer.server)
 	}
+
 	web.httpsServer.enabled = enabled
 	web.httpsServer.cert = cert
 	web.httpsServer.cond.Broadcast()
@@ -161,7 +165,7 @@ func (web *Web) Start() {
 
 	// this loop is used as an ability to change listening host and/or port
 	for !web.httpsServer.shutdown {
-		printHTTPAddresses("http")
+		printHTTPAddresses(schemeHTTP)
 		errs := make(chan error, 2)
 
 		hostStr := web.conf.BindHost.String()
@@ -206,27 +210,20 @@ func (web *Web) Start() {
 
 // Close gracefully shuts down the HTTP servers.
 func (web *Web) Close(ctx context.Context) {
-	log.Info("Stopping HTTP server...")
+	log.Info("stopping http server...")
+
 	web.httpsServer.cond.L.Lock()
 	web.httpsServer.shutdown = true
 	web.httpsServer.cond.L.Unlock()
 
-	shut := func(srv *http.Server) {
-		if srv == nil {
-			return
-		}
-		ctx, cancel := context.WithTimeout(ctx, shutdownTimeout)
-		defer cancel()
-		if err := srv.Shutdown(ctx); err != nil {
-			log.Debug("error while shutting down HTTP server: %s", err)
-		}
-	}
+	var cancel context.CancelFunc
+	ctx, cancel = context.WithTimeout(ctx, shutdownTimeout)
 
-	shut(web.httpsServer.server)
-	shut(web.httpServer)
-	shut(web.httpServerBeta)
+	shutdownSrv(ctx, cancel, web.httpsServer.server)
+	shutdownSrv(ctx, cancel, web.httpServer)
+	shutdownSrv(ctx, cancel, web.httpServerBeta)
 
-	log.Info("Stopped HTTP server")
+	log.Info("stopped http server")
 }
 
 func (web *Web) tlsServerLoop() {
@@ -265,7 +262,7 @@ func (web *Web) tlsServerLoop() {
 			WriteTimeout:      web.conf.WriteTimeout,
 		}
 
-		printHTTPAddresses("https")
+		printHTTPAddresses(schemeHTTPS)
 		err := web.httpsServer.server.ListenAndServeTLS("", "")
 		if err != http.ErrServerClosed {
 			cleanupAlways()

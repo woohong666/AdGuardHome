@@ -7,7 +7,9 @@ import (
 
 	"github.com/AdguardTeam/AdGuardHome/internal/aghtest"
 	"github.com/AdguardTeam/golibs/cache"
+	"github.com/miekg/dns"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSafeBrowsingHash(t *testing.T) {
@@ -114,11 +116,16 @@ func TestSBPC_checkErrorUpstream(t *testing.T) {
 	d.SetSafeBrowsingUpstream(ups)
 	d.SetParentalUpstream(ups)
 
-	_, err := d.checkSafeBrowsing("smthng.com")
-	assert.NotNil(t, err)
+	setts := &FilteringSettings{
+		SafeBrowsingEnabled: true,
+		ParentalEnabled:     true,
+	}
 
-	_, err = d.checkParental("smthng.com")
-	assert.NotNil(t, err)
+	_, err := d.checkSafeBrowsing("smthng.com", dns.TypeA, setts)
+	assert.Error(t, err)
+
+	_, err = d.checkParental("smthng.com", dns.TypeA, setts)
+	assert.Error(t, err)
 }
 
 func TestSBPC(t *testing.T) {
@@ -127,10 +134,15 @@ func TestSBPC(t *testing.T) {
 
 	const hostname = "example.org"
 
+	setts := &FilteringSettings{
+		SafeBrowsingEnabled: true,
+		ParentalEnabled:     true,
+	}
+
 	testCases := []struct {
 		name      string
 		block     bool
-		testFunc  func(string) (Result, error)
+		testFunc  func(host string, _ uint16, _ *FilteringSettings) (res Result, err error)
 		testCache cache.Cache
 	}{{
 		name:      "sb_no_block",
@@ -155,25 +167,26 @@ func TestSBPC(t *testing.T) {
 	}}
 
 	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			// Prepare the upstream.
-			ups := &aghtest.TestBlockUpstream{
-				Hostname: hostname,
-				Block:    tc.block,
-			}
-			d.SetSafeBrowsingUpstream(ups)
-			d.SetParentalUpstream(ups)
+		// Prepare the upstream.
+		ups := &aghtest.TestBlockUpstream{
+			Hostname: hostname,
+			Block:    tc.block,
+		}
+		d.SetSafeBrowsingUpstream(ups)
+		d.SetParentalUpstream(ups)
 
+		t.Run(tc.name, func(t *testing.T) {
 			// Firstly, check the request blocking.
 			hits := 0
-			res, err := tc.testFunc(hostname)
-			assert.Nil(t, err)
+			res, err := tc.testFunc(hostname, dns.TypeA, setts)
+			require.NoError(t, err)
+
 			if tc.block {
 				assert.True(t, res.IsFiltered)
-				assert.Len(t, res.Rules, 1)
+				require.Len(t, res.Rules, 1)
 				hits++
 			} else {
-				assert.False(t, res.IsFiltered)
+				require.False(t, res.IsFiltered)
 			}
 
 			// Check the cache state, check the response is now cached.
@@ -184,13 +197,14 @@ func TestSBPC(t *testing.T) {
 			assert.Equal(t, 1, ups.RequestsCount())
 
 			// Now make the same request to check the cache was used.
-			res, err = tc.testFunc(hostname)
-			assert.Nil(t, err)
+			res, err = tc.testFunc(hostname, dns.TypeA, setts)
+			require.NoError(t, err)
+
 			if tc.block {
 				assert.True(t, res.IsFiltered)
-				assert.Len(t, res.Rules, 1)
+				require.Len(t, res.Rules, 1)
 			} else {
-				assert.False(t, res.IsFiltered)
+				require.False(t, res.IsFiltered)
 			}
 
 			// Check the cache state, it should've been used.
@@ -199,8 +213,8 @@ func TestSBPC(t *testing.T) {
 
 			// Check that there were no additional requests.
 			assert.Equal(t, 1, ups.RequestsCount())
-
-			purgeCaches()
 		})
+
+		purgeCaches()
 	}
 }

@@ -8,7 +8,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/AdguardTeam/AdGuardHome/internal/agherr"
 	"github.com/miekg/dns"
 )
 
@@ -71,7 +70,7 @@ func (u *TestUpstream) Exchange(m *dns.Msg) (resp *dns.Msg, err error) {
 		for _, n := range names {
 			resp.Answer = append(resp.Answer, &dns.PTR{
 				Hdr: dns.RR_Header{
-					Name:   name,
+					Name:   n,
 					Rrtype: rrType,
 				},
 				Ptr: n,
@@ -162,11 +161,17 @@ func (u *TestBlockUpstream) RequestsCount() int {
 
 // TestErrUpstream implements upstream.Upstream interface for replacing real
 // upstream in tests.
-type TestErrUpstream struct{}
+type TestErrUpstream struct {
+	// The error returned by Exchange may be unwraped to the Err.
+	Err error
+}
 
 // Exchange always returns nil Msg and non-nil error.
 func (u *TestErrUpstream) Exchange(*dns.Msg) (*dns.Msg, error) {
-	return nil, agherr.Error("bad")
+	// We don't use an agherr.Error to avoid the import cycle since aghtests
+	// used to provide the utilities for testing which agherr (and any other
+	// testable package) should be able to use.
+	return nil, fmt.Errorf("errupstream: %w", u.Err)
 }
 
 // Address always returns an empty string.

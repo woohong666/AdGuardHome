@@ -2,18 +2,20 @@ package util
 
 import (
 	"bufio"
+	"errors"
 	"io"
 	"io/ioutil"
 	"net"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
 
-	"github.com/miekg/dns"
-
+	"github.com/AdguardTeam/AdGuardHome/internal/aghnet"
 	"github.com/AdguardTeam/golibs/log"
 	"github.com/fsnotify/fsnotify"
+	"github.com/miekg/dns"
 )
 
 type onChangedT func()
@@ -66,8 +68,9 @@ func (a *AutoHosts) Init(hostsFn string) {
 		a.hostsFn = hostsFn
 	}
 
-	if IsOpenWRT() {
-		a.hostsDirs = append(a.hostsDirs, "/tmp/hosts") // OpenWRT: "/tmp/hosts/dhcp.cfg01411c"
+	if IsOpenWrt() {
+		// OpenWrt: "/tmp/hosts/dhcp.cfg01411c".
+		a.hostsDirs = append(a.hostsDirs, "/tmp/hosts")
 	}
 
 	// Load hosts initially
@@ -76,7 +79,7 @@ func (a *AutoHosts) Init(hostsFn string) {
 	var err error
 	a.watcher, err = fsnotify.NewWatcher()
 	if err != nil {
-		log.Error("AutoHosts: %s", err)
+		log.Error("autohosts: %s", err)
 	}
 }
 
@@ -127,7 +130,7 @@ func (a *AutoHosts) Process(host string, qtype uint16) []net.IP {
 		copy(ipsCopy, ips)
 	}
 
-	log.Debug("AutoHosts: answer: %s -> %v", host, ipsCopy)
+	log.Debug("autohosts: answer: %s -> %v", host, ipsCopy)
 	return ipsCopy
 }
 
@@ -137,7 +140,7 @@ func (a *AutoHosts) ProcessReverse(addr string, qtype uint16) (hosts []string) {
 		return nil
 	}
 
-	ipReal := DNSUnreverseAddr(addr)
+	ipReal := aghnet.UnreverseAddr(addr)
 	if ipReal == nil {
 		return nil
 	}
@@ -153,7 +156,7 @@ func (a *AutoHosts) ProcessReverse(addr string, qtype uint16) (hosts []string) {
 		return nil // not found
 	}
 
-	log.Debug("AutoHosts: reverse-lookup: %s -> %s", addr, hosts)
+	log.Debug("autohosts: reverse-lookup: %s -> %s", addr, hosts)
 
 	return hosts
 }
@@ -191,7 +194,7 @@ func (a *AutoHosts) updateTable(table map[string][]net.IP, host string, ipAddr n
 		ok = true
 	}
 	if ok {
-		log.Debug("AutoHosts: added %s -> %s", ipAddr, host)
+		log.Debug("autohosts: added %s -> %s", ipAddr, host)
 	}
 }
 
@@ -201,7 +204,7 @@ func (a *AutoHosts) updateTableRev(tableRev map[string][]string, newHost string,
 	hosts, ok := tableRev[ipStr]
 	if !ok {
 		tableRev[ipStr] = []string{newHost}
-		log.Debug("AutoHosts: added reverse-address %s -> %s", ipStr, newHost)
+		log.Debug("autohosts: added reverse-address %s -> %s", ipStr, newHost)
 
 		return
 	}
@@ -213,7 +216,7 @@ func (a *AutoHosts) updateTableRev(tableRev map[string][]string, newHost string,
 	}
 
 	tableRev[ipStr] = append(tableRev[ipStr], newHost)
-	log.Debug("AutoHosts: added reverse-address %s -> %s", ipStr, newHost)
+	log.Debug("autohosts: added reverse-address %s -> %s", ipStr, newHost)
 }
 
 // Read IP-hostname pairs from file
@@ -221,22 +224,24 @@ func (a *AutoHosts) updateTableRev(tableRev map[string][]string, newHost string,
 func (a *AutoHosts) load(table map[string][]net.IP, tableRev map[string][]string, fn string) {
 	f, err := os.Open(fn)
 	if err != nil {
-		log.Error("AutoHosts: %s", err)
+		log.Error("autohosts: %s", err)
 		return
 	}
 	defer f.Close()
 	r := bufio.NewReader(f)
-	log.Debug("AutoHosts: loading hosts from file %s", fn)
+	log.Debug("autohosts: loading hosts from file %s", fn)
 
-	finish := false
-	for !finish {
-		line, err := r.ReadString('\n')
+	for done := false; !done; {
+		var line string
+		line, err = r.ReadString('\n')
 		if err == io.EOF {
-			finish = true
+			done = true
 		} else if err != nil {
-			log.Error("AutoHosts: %s", err)
+			log.Error("autohosts: %s", err)
+
 			return
 		}
+
 		line = strings.TrimSpace(line)
 		if len(line) == 0 || line[0] == '#' {
 			continue
@@ -247,26 +252,30 @@ func (a *AutoHosts) load(table map[string][]net.IP, tableRev map[string][]string
 			continue
 		}
 
-		ipAddr := net.ParseIP(fields[0])
-		if ipAddr == nil {
+		ip := net.ParseIP(fields[0])
+		if ip == nil {
 			continue
 		}
+
 		for i := 1; i != len(fields); i++ {
 			host := fields[i]
 			if len(host) == 0 {
 				break
 			}
+
 			sharp := strings.IndexByte(host, '#')
 			if sharp == 0 {
-				break // skip the rest of the line after #
+				// Skip the comments.
+				break
 			} else if sharp > 0 {
 				host = host[:sharp]
 			}
 
-			a.updateTable(table, host, ipAddr)
-			a.updateTableRev(tableRev, host, ipAddr)
+			a.updateTable(table, host, ip)
+			a.updateTableRev(tableRev, host, ip)
 			if sharp >= 0 {
-				break // skip the rest of the line after #
+				// Skip the comments again.
+				break
 			}
 		}
 	}
@@ -304,7 +313,7 @@ func (a *AutoHosts) watcherLoop() {
 			}
 
 			if event.Op&fsnotify.Write == fsnotify.Write {
-				log.Debug("AutoHosts: modified: %s", event.Name)
+				log.Debug("autohosts: modified: %s", event.Name)
 				a.updateHosts()
 			}
 
@@ -312,7 +321,7 @@ func (a *AutoHosts) watcherLoop() {
 			if !ok {
 				return
 			}
-			log.Error("AutoHosts: %s", err)
+			log.Error("autohosts: %s", err)
 		}
 	}
 }
@@ -327,14 +336,15 @@ func (a *AutoHosts) updateHosts() {
 	for _, dir := range a.hostsDirs {
 		fis, err := ioutil.ReadDir(dir)
 		if err != nil {
-			if !os.IsNotExist(err) {
-				log.Error("AutoHosts: Opening directory: %s: %s", dir, err)
+			if !errors.Is(err, os.ErrNotExist) {
+				log.Error("autohosts: Opening directory: %q: %s", dir, err)
 			}
+
 			continue
 		}
 
 		for _, fi := range fis {
-			a.load(table, tableRev, dir+"/"+fi.Name())
+			a.load(table, tableRev, filepath.Join(dir, fi.Name()))
 		}
 	}
 

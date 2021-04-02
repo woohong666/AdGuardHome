@@ -10,11 +10,7 @@ CLIENT_DIR = client
 COMMIT = $$(git rev-parse --short HEAD)
 DIST_DIR = dist
 GO = go
-# TODO(a.garipov): Add more default proxies using pipes after update to
-# Go 1.15.
-#
-# GOPROXY = https://goproxy.io|https://goproxy.cn|direct
-GOPROXY = https://goproxy.cn,https://goproxy.io,direct
+GOPROXY = https://goproxy.cn|https://proxy.golang.org|direct
 GPG_KEY = devteam@adguard.com
 GPG_KEY_PASSPHRASE = not-a-real-password
 NPM = npm
@@ -23,7 +19,7 @@ SIGN = 1
 VERBOSE = 0
 VERSION = v0.0.0
 YARN = yarn
-YARN_FLAGS = --cwd $(CLIENT_BETA_DIR)
+YARN_FLAGS = --cwd $(CLIENT_BETA_DIR) --network-timeout 120000
 
 ENV = env\
 	COMMIT='$(COMMIT)'\
@@ -86,18 +82,3 @@ go-check: go-tools go-lint go-test
 
 openapi-lint: ; cd ./openapi/ && $(YARN) test
 openapi-show: ; cd ./openapi/ && $(YARN) start
-
-# TODO(a.garipov): Remove the legacy targets once the build
-# infrastructure stops using them.
-dependencies:
-	@ echo "use make deps instead"
-	@ $(MAKE) deps
-docker-multi-arch:
-	@ echo "use make build-docker instead"
-	@ $(MAKE) build-docker
-go-install-tools:
-	@ echo "use make go-tools instead"
-	@ $(MAKE) go-tools
-release:
-	@ echo "use make build-release instead"
-	@ $(MAKE) build-release

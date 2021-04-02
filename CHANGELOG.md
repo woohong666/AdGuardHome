@@ -10,12 +10,56 @@ and this project adheres to
 ## [Unreleased]
 
 <!--
-## [v0.106.0] - 2021-04-26
+## [v0.106.0] - 2021-05-01
 -->
 
-<!--
-## [v0.105.2] - 2021-03-04
--->
+### Added
+
+- Verbose version output with `-v --version` ([#2416]).
+- The ability to set a custom TLD for known local-network hosts ([#2393]).
+- The ability to serve DNS queries on multiple hosts and interfaces ([#1401]).
+- `ips` and `text` DHCP server options ([#2385]).
+- `SRV` records support in `$dnsrewrite` filters ([#2533]).
+
+### Changed
+
+- The reverse lookup for local addresses is now performed via local resolvers
+  ([#2704]).
+- Stricter validation of the IP addresses of static leases in the DHCP server
+  with regards to the netmask ([#2838]).
+- Stricter validation of `$dnsrewrite` filter modifier parameters ([#2498]).
+- New, more correct versioning scheme ([#2412]).
+
+### Deprecated
+
+- Go 1.15 support.  v0.107.0 will require at least Go 1.16 to build.
+
+### Fixed
+
+- Assumption that MAC addresses always have the length of 6 octets ([#2828]).
+- Support for more than one `/24` subnet in DHCP ([#2541]).
+- Invalid filenames in the `mobileconfig` API responses ([#2835]).
+
+### Removed
+
+- Go 1.14 support.
+
+[#1401]: https://github.com/AdguardTeam/AdGuardHome/issues/1401
+[#2385]: https://github.com/AdguardTeam/AdGuardHome/issues/2385
+[#2393]: https://github.com/AdguardTeam/AdGuardHome/issues/2393
+[#2412]: https://github.com/AdguardTeam/AdGuardHome/issues/2412
+[#2416]: https://github.com/AdguardTeam/AdGuardHome/issues/2416
+[#2498]: https://github.com/AdguardTeam/AdGuardHome/issues/2498
+[#2533]: https://github.com/AdguardTeam/AdGuardHome/issues/2533
+[#2541]: https://github.com/AdguardTeam/AdGuardHome/issues/2541
+[#2704]: https://github.com/AdguardTeam/AdGuardHome/issues/2704
+[#2828]: https://github.com/AdguardTeam/AdGuardHome/issues/2828
+[#2835]: https://github.com/AdguardTeam/AdGuardHome/issues/2835
+[#2838]: https://github.com/AdguardTeam/AdGuardHome/issues/2838
+
+
+
+## [v0.105.2] - 2021-03-10
 
 ### Fixed
 
@@ -23,7 +67,7 @@ and this project adheres to
 - Wrong DNS-over-TLS ALPN configuration ([#2681]).
 - Inconsistent responses for messages with EDNS0 and AD when DNS caching is
   enabled ([#2600]).
-- Incomplete OpenWRT detection ([#2757]).
+- Incomplete OpenWrt detection ([#2757]).
 - DHCP lease's `expired` field incorrect time format ([#2692]).
 - Incomplete DNS upstreams validation ([#2674]).
 - Wrong parsing of DHCP options of the `ip` type ([#2688]).
@@ -225,11 +269,12 @@ and this project adheres to
 
 
 <!--
-[Unreleased]: https://github.com/AdguardTeam/AdGuardHome/compare/v0.105.2...HEAD
-[v0.105.2]:   https://github.com/AdguardTeam/AdGuardHome/compare/v0.105.1...v0.105.2
+[Unreleased]: https://github.com/AdguardTeam/AdGuardHome/compare/v0.106.0...HEAD
+[v0.106.0]:   https://github.com/AdguardTeam/AdGuardHome/compare/v0.105.2...v0.106.0
 -->
 
-[Unreleased]: https://github.com/AdguardTeam/AdGuardHome/compare/v0.105.1...HEAD
+[Unreleased]: https://github.com/AdguardTeam/AdGuardHome/compare/v0.105.2...HEAD
+[v0.105.2]:   https://github.com/AdguardTeam/AdGuardHome/compare/v0.105.1...v0.105.2
 [v0.105.1]:   https://github.com/AdguardTeam/AdGuardHome/compare/v0.105.0...v0.105.1
 [v0.105.0]:   https://github.com/AdguardTeam/AdGuardHome/compare/v0.104.3...v0.105.0
 [v0.104.3]:   https://github.com/AdguardTeam/AdGuardHome/compare/v0.104.2...v0.104.3

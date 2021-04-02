@@ -32,7 +32,7 @@ func (s *Server) beforeRequestHandler(_ *proxy.Proxy, d *proxy.DNSContext) (bool
 
 // getClientRequestFilteringSettings looks up client filtering settings using
 // the client's IP address and ID, if any, from ctx.
-func (s *Server) getClientRequestFilteringSettings(ctx *dnsContext) *dnsfilter.RequestFilteringSettings {
+func (s *Server) getClientRequestFilteringSettings(ctx *dnsContext) *dnsfilter.FilteringSettings {
 	setts := s.dnsFilter.GetConfig()
 	setts.FilteringEnabled = true
 	if s.conf.FilterHandler != nil {
@@ -46,6 +46,8 @@ func (s *Server) getClientRequestFilteringSettings(ctx *dnsContext) *dnsfilter.R
 // was filtered.
 func (s *Server) filterDNSRequest(ctx *dnsContext) (*dnsfilter.Result, error) {
 	d := ctx.proxyCtx
+	// TODO(e.burkov): Consistently use req instead of d.Req since it is
+	// declared.
 	req := d.Req
 	host := strings.TrimSuffix(req.Question[0].Name, ".")
 	res, err := s.dnsFilter.CheckHost(host, d.Req.Question[0].Qtype, ctx.setts)

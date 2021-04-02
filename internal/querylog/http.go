@@ -8,8 +8,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/AdguardTeam/AdGuardHome/internal/util"
-
 	"github.com/AdguardTeam/golibs/jsonutil"
 	"github.com/AdguardTeam/golibs/log"
 )
@@ -127,6 +125,17 @@ func getDoubleQuotesEnclosedValue(s *string) bool {
 	return false
 }
 
+// inStr checks if string is in the slice of strings.
+func inStr(strs []string, str string) (ok bool) {
+	for _, s := range strs {
+		if s == str {
+			return true
+		}
+	}
+
+	return false
+}
+
 // parseSearchCriteria - parses "searchCriteria" from the specified query parameter
 func (l *queryLog) parseSearchCriteria(q url.Values, name string, ct criteriaType) (bool, searchCriteria, error) {
 	val := q.Get(name)
@@ -142,7 +151,7 @@ func (l *queryLog) parseSearchCriteria(q url.Values, name string, ct criteriaTyp
 		c.strict = true
 	}
 
-	if ct == ctFilteringStatus && !util.ContainsString(filteringStatusValues, c.value) {
+	if ct == ctFilteringStatus && !inStr(filteringStatusValues, c.value) {
 		return false, c, fmt.Errorf("invalid value %s", c.value)
 	}
 
@@ -150,10 +159,9 @@ func (l *queryLog) parseSearchCriteria(q url.Values, name string, ct criteriaTyp
 }
 
 // parseSearchParams - parses "searchParams" from the HTTP request's query string
-func (l *queryLog) parseSearchParams(r *http.Request) (*searchParams, error) {
-	p := newSearchParams()
+func (l *queryLog) parseSearchParams(r *http.Request) (p *searchParams, err error) {
+	p = newSearchParams()
 
-	var err error
 	q := r.URL.Query()
 	olderThan := q.Get("older_than")
 	if len(olderThan) != 0 {
@@ -163,11 +171,14 @@ func (l *queryLog) parseSearchParams(r *http.Request) (*searchParams, error) {
 		}
 	}
 
-	if limit, err := strconv.ParseInt(q.Get("limit"), 10, 64); err == nil {
-		p.limit = int(limit)
+	var limit64 int64
+	if limit64, err = strconv.ParseInt(q.Get("limit"), 10, 64); err == nil {
+		p.limit = int(limit64)
 	}
-	if offset, err := strconv.ParseInt(q.Get("offset"), 10, 64); err == nil {
-		p.offset = int(offset)
+
+	var offset64 int64
+	if offset64, err = strconv.ParseInt(q.Get("offset"), 10, 64); err == nil {
+		p.offset = int(offset64)
 
 		// If we don't use "olderThan" and use offset/limit instead, we should change the default behavior
 		// and scan all log records until we found enough log entries
@@ -180,7 +191,9 @@ func (l *queryLog) parseSearchParams(r *http.Request) (*searchParams, error) {
 	}
 
 	for k, v := range paramNames {
-		ok, c, err := l.parseSearchCriteria(q, k, v)
+		var ok bool
+		var c searchCriteria
+		ok, c, err = l.parseSearchCriteria(q, k, v)
 		if err != nil {
 			return nil, err
 		}

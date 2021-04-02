@@ -69,7 +69,15 @@ func (d *DNSFilter) SafeSearchDomain(host string) (string, bool) {
 	return val, ok
 }
 
-func (d *DNSFilter) checkSafeSearch(host string) (Result, error) {
+func (d *DNSFilter) checkSafeSearch(
+	host string,
+	_ uint16,
+	setts *FilteringSettings,
+) (res Result, err error) {
+	if !setts.SafeSearchEnabled {
+		return Result{}, nil
+	}
+
 	if log.GetLevel() >= log.DEBUG {
 		timer := log.StartTimer()
 		defer timer.LogElapsed("SafeSearch: lookup for %s", host)
@@ -88,7 +96,7 @@ func (d *DNSFilter) checkSafeSearch(host string) (Result, error) {
 		return Result{}, nil
 	}
 
-	res := Result{
+	res = Result{
 		IsFiltered: true,
 		Reason:     FilteredSafeSearch,
 		Rules:      []*ResultRule{{}},
@@ -102,21 +110,23 @@ func (d *DNSFilter) checkSafeSearch(host string) (Result, error) {
 		return res, nil
 	}
 
-	ipAddrs, err := d.resolver.LookupIPAddr(context.Background(), safeHost)
+	ips, err := d.resolver.LookupIP(context.Background(), "ip", safeHost)
 	if err != nil {
 		log.Tracef("SafeSearchDomain for %s was found but failed to lookup for %s cause %s", host, safeHost, err)
 		return Result{}, err
 	}
 
-	for _, ipAddr := range ipAddrs {
-		if ipv4 := ipAddr.IP.To4(); ipv4 != nil {
-			res.Rules[0].IP = ipv4
-
-			l := d.setCacheResult(gctx.safeSearchCache, host, res)
-			log.Debug("SafeSearch: stored in cache: %s (%d bytes)", host, l)
-
-			return res, nil
+	for _, ip := range ips {
+		if ip = ip.To4(); ip == nil {
+			continue
 		}
+
+		res.Rules[0].IP = ip
+
+		l := d.setCacheResult(gctx.safeSearchCache, host, res)
+		log.Debug("SafeSearch: stored in cache: %s (%d bytes)", host, l)
+
+		return res, nil
 	}
 
 	return Result{}, fmt.Errorf("no ipv4 addresses in safe search response for %s", safeHost)

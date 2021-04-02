@@ -191,16 +191,28 @@ var glinetArg = arg{
 }
 
 var versionArg = arg{
-	"Show the version and exit",
-	"version", "",
-	nil, nil, func(o options, exec string) (effect, error) {
-		return func() error { fmt.Println(version.Full()); os.Exit(0); return nil }, nil
+	description:     "Show the version and exit",
+	longName:        "version",
+	shortName:       "",
+	updateWithValue: nil,
+	updateNoValue:   nil,
+	effect: func(o options, exec string) (effect, error) {
+		return func() error {
+			if o.verbose {
+				fmt.Println(version.Verbose())
+			} else {
+				fmt.Println(version.Full())
+			}
+			os.Exit(0)
+
+			return nil
+		}, nil
 	},
-	func(o options) []string { return nil },
+	serialize: func(o options) []string { return nil },
 }
 
 var helpArg = arg{
-	"Print this help",
+	"Print this help. Show more detailed version description with -v",
 	"help", "",
 	nil, nil, func(o options, exec string) (effect, error) {
 		return func() error { _ = printHelp(exec); os.Exit(64); return nil }, nil
@@ -296,15 +308,14 @@ func parse(exec string, ss []string) (o options, f effect, err error) {
 					}
 					if eff != nil {
 						prevf := f
-						f = func() error {
-							var err error
+						f = func() (ferr error) {
 							if prevf != nil {
-								err = prevf()
+								ferr = prevf()
 							}
-							if err == nil {
-								err = eff()
+							if ferr == nil {
+								ferr = eff()
 							}
-							return err
+							return ferr
 						}
 					}
 				}

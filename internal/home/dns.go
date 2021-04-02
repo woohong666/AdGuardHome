@@ -13,7 +13,6 @@ import (
 	"github.com/AdguardTeam/AdGuardHome/internal/dnsforward"
 	"github.com/AdguardTeam/AdGuardHome/internal/querylog"
 	"github.com/AdguardTeam/AdGuardHome/internal/stats"
-	"github.com/AdguardTeam/AdGuardHome/internal/util"
 	"github.com/AdguardTeam/dnsproxy/proxy"
 	"github.com/AdguardTeam/golibs/log"
 	"github.com/ameshkov/dnscrypt/v2"
@@ -56,29 +55,35 @@ func initDNSServer() error {
 	Context.queryLog = querylog.New(conf)
 
 	filterConf := config.DNS.DnsfilterConf
-	bindhost := config.DNS.BindHost
-	if config.DNS.BindHost.IsUnspecified() {
-		bindhost = net.IPv4(127, 0, 0, 1)
-	}
-	filterConf.ResolverAddress = net.JoinHostPort(bindhost.String(), strconv.Itoa(config.DNS.Port))
 	filterConf.AutoHosts = &Context.autoHosts
 	filterConf.ConfigModified = onConfigModified
 	filterConf.HTTPRegister = httpRegister
 	Context.dnsFilter = dnsfilter.New(&filterConf, nil)
 
 	p := dnsforward.DNSCreateParams{
-		DNSFilter: Context.dnsFilter,
-		Stats:     Context.stats,
-		QueryLog:  Context.queryLog,
+		DNSFilter:      Context.dnsFilter,
+		Stats:          Context.stats,
+		QueryLog:       Context.queryLog,
+		SubnetDetector: Context.subnetDetector,
+		LocalResolvers: Context.localResolvers,
+		AutohostTLD:    config.DNS.AutohostTLD,
 	}
 	if Context.dhcpServer != nil {
 		p.DHCPServer = Context.dhcpServer
 	}
-	Context.dnsServer = dnsforward.NewServer(p)
+
+	Context.dnsServer, err = dnsforward.NewServer(p)
+	if err != nil {
+		closeDNSServer()
+
+		return fmt.Errorf("dnsforward.NewServer: %w", err)
+	}
+
 	Context.clients.dnsServer = Context.dnsServer
 	dnsConfig, err := generateServerConfig()
 	if err != nil {
 		closeDNSServer()
+
 		return fmt.Errorf("generateServerConfig: %w", err)
 	}
 
@@ -88,7 +93,7 @@ func initDNSServer() error {
 		return fmt.Errorf("dnsServer.Prepare: %w", err)
 	}
 
-	Context.rdns = InitRDNS(Context.dnsServer, &Context.clients)
+	Context.rdns = NewRDNS(Context.dnsServer, &Context.clients, Context.subnetDetector, Context.localResolvers)
 	Context.whois = initWhois(&Context.clients)
 
 	Context.filters.Init()
@@ -102,23 +107,61 @@ func isRunning() bool {
 func onDNSRequest(d *proxy.DNSContext) {
 	ip := dnsforward.IPFromAddr(d.Addr)
 	if ip == nil {
-		// This would be quite weird if we get here
+		// This would be quite weird if we get here.
 		return
 	}
 
 	if !ip.IsLoopback() {
 		Context.rdns.Begin(ip)
 	}
-	if !Context.ipDetector.detectSpecialNetwork(ip) {
+	if !Context.subnetDetector.IsSpecialNetwork(ip) {
 		Context.whois.Begin(ip)
 	}
 }
 
-func generateServerConfig() (newconfig dnsforward.ServerConfig, err error) {
-	newconfig = dnsforward.ServerConfig{
-		UDPListenAddr:   &net.UDPAddr{IP: config.DNS.BindHost, Port: config.DNS.Port},
-		TCPListenAddr:   &net.TCPAddr{IP: config.DNS.BindHost, Port: config.DNS.Port},
-		FilteringConfig: config.DNS.FilteringConfig,
+func ipsToTCPAddrs(ips []net.IP, port int) (tcpAddrs []*net.TCPAddr) {
+	if ips == nil {
+		return nil
+	}
+
+	tcpAddrs = make([]*net.TCPAddr, len(ips))
+	for i, ip := range ips {
+		tcpAddrs[i] = &net.TCPAddr{
+			IP:   ip,
+			Port: port,
+		}
+	}
+
+	return tcpAddrs
+}
+
+func ipsToUDPAddrs(ips []net.IP, port int) (udpAddrs []*net.UDPAddr) {
+	if ips == nil {
+		return nil
+	}
+
+	udpAddrs = make([]*net.UDPAddr, len(ips))
+	for i, ip := range ips {
+		udpAddrs[i] = &net.UDPAddr{
+			IP:   ip,
+			Port: port,
+		}
+	}
+
+	return udpAddrs
+}
+
+func generateServerConfig() (newConf dnsforward.ServerConfig, err error) {
+	dnsConf := config.DNS
+	hosts := dnsConf.BindHosts
+	if len(hosts) == 0 {
+		hosts = []net.IP{{127, 0, 0, 1}}
+	}
+
+	newConf = dnsforward.ServerConfig{
+		UDPListenAddrs:  ipsToUDPAddrs(hosts, dnsConf.Port),
+		TCPListenAddrs:  ipsToTCPAddrs(hosts, dnsConf.Port),
+		FilteringConfig: dnsConf.FilteringConfig,
 		ConfigModified:  onConfigModified,
 		HTTPRegister:    httpRegister,
 		OnDNSRequest:    onDNSRequest,
@@ -127,25 +170,19 @@ func generateServerConfig() (newconfig dnsforward.ServerConfig, err error) {
 	tlsConf := tlsConfigSettings{}
 	Context.tls.WriteDiskConfig(&tlsConf)
 	if tlsConf.Enabled {
-		newconfig.TLSConfig = tlsConf.TLSConfig
-		newconfig.TLSConfig.ServerName = tlsConf.ServerName
+		newConf.TLSConfig = tlsConf.TLSConfig
+		newConf.TLSConfig.ServerName = tlsConf.ServerName
 
 		if tlsConf.PortDNSOverTLS != 0 {
-			newconfig.TLSListenAddr = &net.TCPAddr{
-				IP:   config.DNS.BindHost,
-				Port: tlsConf.PortDNSOverTLS,
-			}
+			newConf.TLSListenAddrs = ipsToTCPAddrs(hosts, tlsConf.PortDNSOverTLS)
 		}
 
 		if tlsConf.PortDNSOverQUIC != 0 {
-			newconfig.QUICListenAddr = &net.UDPAddr{
-				IP:   config.DNS.BindHost,
-				Port: int(tlsConf.PortDNSOverQUIC),
-			}
+			newConf.QUICListenAddrs = ipsToUDPAddrs(hosts, tlsConf.PortDNSOverQUIC)
 		}
 
 		if tlsConf.PortDNSCrypt != 0 {
-			newconfig.DNSCryptConfig, err = newDNSCrypt(config.DNS.BindHost, tlsConf)
+			newConf.DNSCryptConfig, err = newDNSCrypt(hosts, tlsConf)
 			if err != nil {
 				// Don't wrap the error, because it's already
 				// wrapped by newDNSCrypt.
@@ -154,17 +191,17 @@ func generateServerConfig() (newconfig dnsforward.ServerConfig, err error) {
 		}
 	}
 
-	newconfig.TLSv12Roots = Context.tlsRoots
-	newconfig.TLSCiphers = Context.tlsCiphers
-	newconfig.TLSAllowUnencryptedDOH = tlsConf.AllowUnencryptedDOH
+	newConf.TLSv12Roots = Context.tlsRoots
+	newConf.TLSCiphers = Context.tlsCiphers
+	newConf.TLSAllowUnencryptedDOH = tlsConf.AllowUnencryptedDOH
 
-	newconfig.FilterHandler = applyAdditionalFiltering
-	newconfig.GetCustomUpstreamByClient = Context.clients.FindUpstreams
+	newConf.FilterHandler = applyAdditionalFiltering
+	newConf.GetCustomUpstreamByClient = Context.clients.FindUpstreams
 
-	return newconfig, nil
+	return newConf, nil
 }
 
-func newDNSCrypt(bindHost net.IP, tlsConf tlsConfigSettings) (dnscc dnsforward.DNSCryptConfig, err error) {
+func newDNSCrypt(hosts []net.IP, tlsConf tlsConfigSettings) (dnscc dnsforward.DNSCryptConfig, err error) {
 	if tlsConf.DNSCryptConfigFile == "" {
 		return dnscc, agherr.Error("no dnscrypt_config_file")
 	}
@@ -186,21 +223,12 @@ func newDNSCrypt(bindHost net.IP, tlsConf tlsConfigSettings) (dnscc dnsforward.D
 		return dnscc, fmt.Errorf("creating dnscrypt cert: %w", err)
 	}
 
-	udpAddr := &net.UDPAddr{
-		IP:   bindHost,
-		Port: tlsConf.PortDNSCrypt,
-	}
-	tcpAddr := &net.TCPAddr{
-		IP:   bindHost,
-		Port: tlsConf.PortDNSCrypt,
-	}
-
 	return dnsforward.DNSCryptConfig{
-		UDPListenAddr: udpAddr,
-		TCPListenAddr: tcpAddr,
-		ResolverCert:  cert,
-		ProviderName:  rc.ProviderName,
-		Enabled:       true,
+		UDPListenAddrs: ipsToUDPAddrs(hosts, tlsConf.PortDNSCrypt),
+		TCPListenAddrs: ipsToTCPAddrs(hosts, tlsConf.PortDNSCrypt),
+		ResolverCert:   cert,
+		ProviderName:   rc.ProviderName,
+		Enabled:        true,
 	}, nil
 }
 
@@ -248,43 +276,9 @@ func getDNSEncryption() (de dnsEncryption) {
 	return de
 }
 
-// Get the list of DNS addresses the server is listening on
-func getDNSAddresses() []string {
-	dnsAddresses := []string{}
-
-	if config.DNS.BindHost.IsUnspecified() {
-		ifaces, e := util.GetValidNetInterfacesForWeb()
-		if e != nil {
-			log.Error("Couldn't get network interfaces: %v", e)
-			return []string{}
-		}
-
-		for _, iface := range ifaces {
-			for _, addr := range iface.Addresses {
-				addDNSAddress(&dnsAddresses, addr)
-			}
-		}
-	} else {
-		addDNSAddress(&dnsAddresses, config.DNS.BindHost)
-	}
-
-	dnsEncryption := getDNSEncryption()
-	if dnsEncryption.https != "" {
-		dnsAddresses = append(dnsAddresses, dnsEncryption.https)
-	}
-	if dnsEncryption.tls != "" {
-		dnsAddresses = append(dnsAddresses, dnsEncryption.tls)
-	}
-	if dnsEncryption.quic != "" {
-		dnsAddresses = append(dnsAddresses, dnsEncryption.quic)
-	}
-
-	return dnsAddresses
-}
-
 // applyAdditionalFiltering adds additional client information and settings if
 // the client has them.
-func applyAdditionalFiltering(clientAddr net.IP, clientID string, setts *dnsfilter.RequestFilteringSettings) {
+func applyAdditionalFiltering(clientAddr net.IP, clientID string, setts *dnsfilter.FilteringSettings) {
 	Context.dnsFilter.ApplyBlockedServices(setts, nil, true)
 
 	if clientAddr == nil {
@@ -341,10 +335,10 @@ func startDNSServer() error {
 
 	const topClientsNumber = 100 // the number of clients to get
 	for _, ip := range Context.stats.GetTopClientsIP(topClientsNumber) {
-		if !ip.IsLoopback() {
+		if !Context.subnetDetector.IsLocallyServedNetwork(ip) {
 			Context.rdns.Begin(ip)
 		}
-		if !Context.ipDetector.detectSpecialNetwork(ip) {
+		if !Context.subnetDetector.IsSpecialNetwork(ip) {
 			Context.whois.Begin(ip)
 		}
 	}
@@ -353,13 +347,13 @@ func startDNSServer() error {
 }
 
 func reconfigureDNSServer() (err error) {
-	var newconfig dnsforward.ServerConfig
-	newconfig, err = generateServerConfig()
+	var newConf dnsforward.ServerConfig
+	newConf, err = generateServerConfig()
 	if err != nil {
 		return fmt.Errorf("generating forwarding dns server config: %w", err)
 	}
 
-	err = Context.dnsServer.Reconfigure(&newconfig)
+	err = Context.dnsServer.Reconfigure(&newConf)
 	if err != nil {
 		return fmt.Errorf("starting forwarding dns server: %w", err)
 	}

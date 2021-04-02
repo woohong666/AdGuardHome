@@ -1,6 +1,6 @@
 // +build darwin
 
-package sysutil
+package aghnet
 
 import (
 	"errors"
@@ -9,7 +9,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/AdguardTeam/AdGuardHome/internal/util"
+	"github.com/AdguardTeam/AdGuardHome/internal/aghos"
 )
 
 // hardwarePortInfo - information obtained using MacOS networksetup
@@ -31,7 +31,7 @@ func ifaceHasStaticIP(ifaceName string) (bool, error) {
 	return portInfo.static, nil
 }
 
-// getCurrentHardwarePortInfo gets information the specified network interface.
+// getCurrentHardwarePortInfo gets information for the specified network interface.
 func getCurrentHardwarePortInfo(ifaceName string) (hardwarePortInfo, error) {
 	// First of all we should find hardware port name
 	m := getNetworkSetupHardwareReports()
@@ -47,7 +47,7 @@ func getCurrentHardwarePortInfo(ifaceName string) (hardwarePortInfo, error) {
 // it returns a map where the key is the interface name, and the value is the "hardware port"
 // returns nil if it fails to parse the output
 func getNetworkSetupHardwareReports() map[string]string {
-	_, out, err := util.RunCommand("networksetup", "-listallhardwareports")
+	_, out, err := aghos.RunCommand("networksetup", "-listallhardwareports")
 	if err != nil {
 		return nil
 	}
@@ -72,7 +72,7 @@ func getNetworkSetupHardwareReports() map[string]string {
 func getHardwarePortInfo(hardwarePort string) (hardwarePortInfo, error) {
 	h := hardwarePortInfo{}
 
-	_, out, err := util.RunCommand("networksetup", "-getinfo", hardwarePort)
+	_, out, err := aghos.RunCommand("networksetup", "-getinfo", hardwarePort)
 	if err != nil {
 		return h, err
 	}
@@ -116,7 +116,7 @@ func ifaceSetStaticIP(ifaceName string) (err error) {
 	args = append(args, dnsAddrs...)
 
 	// Setting DNS servers is necessary when configuring a static IP
-	code, _, err := util.RunCommand("networksetup", args...)
+	code, _, err := aghos.RunCommand("networksetup", args...)
 	if err != nil {
 		return err
 	}
@@ -125,7 +125,7 @@ func ifaceSetStaticIP(ifaceName string) (err error) {
 	}
 
 	// Actually configures hardware port to have static IP
-	code, _, err = util.RunCommand("networksetup", "-setmanual",
+	code, _, err = aghos.RunCommand("networksetup", "-setmanual",
 		portInfo.name, portInfo.ip, portInfo.subnet, portInfo.gatewayIP)
 	if err != nil {
 		return err

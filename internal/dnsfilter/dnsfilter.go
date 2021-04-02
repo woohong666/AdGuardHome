@@ -29,32 +29,30 @@ type ServiceEntry struct {
 	Rules []*rules.NetworkRule
 }
 
-// RequestFilteringSettings is custom filtering settings
-type RequestFilteringSettings struct {
-	FilteringEnabled    bool
-	SafeSearchEnabled   bool
-	SafeBrowsingEnabled bool
-	ParentalEnabled     bool
-
+// FilteringSettings are custom filtering settings for a client.
+type FilteringSettings struct {
 	ClientName string
 	ClientIP   net.IP
 	ClientTags []string
 
 	ServicesRules []ServiceEntry
+
+	FilteringEnabled    bool
+	SafeSearchEnabled   bool
+	SafeBrowsingEnabled bool
+	ParentalEnabled     bool
 }
 
 // Resolver is the interface for net.Resolver to simplify testing.
 type Resolver interface {
-	// TODO(e.burkov): Replace with LookupIP after upgrading go to v1.15.
-	LookupIPAddr(ctx context.Context, host string) (ips []net.IPAddr, err error)
+	LookupIP(ctx context.Context, network, host string) (ips []net.IP, err error)
 }
 
 // Config allows you to configure DNS filtering with New() or just change variables directly.
 type Config struct {
-	ParentalEnabled     bool   `yaml:"parental_enabled"`
-	SafeSearchEnabled   bool   `yaml:"safesearch_enabled"`
-	SafeBrowsingEnabled bool   `yaml:"safebrowsing_enabled"`
-	ResolverAddress     string `yaml:"-"` // DNS server address
+	ParentalEnabled     bool `yaml:"parental_enabled"`
+	SafeSearchEnabled   bool `yaml:"safesearch_enabled"`
+	SafeBrowsingEnabled bool `yaml:"safebrowsing_enabled"`
 
 	SafeBrowsingCacheSize uint `yaml:"safebrowsing_cache_size"` // (in bytes)
 	SafeSearchCacheSize   uint `yaml:"safesearch_cache_size"`   // (in bytes)
@@ -101,6 +99,11 @@ type filtersInitializerParams struct {
 	blockFilters []Filter
 }
 
+type hostChecker struct {
+	check func(host string, qtype uint16, setts *FilteringSettings) (res Result, err error)
+	name  string
+}
+
 // DNSFilter matches hostnames and DNS requests against filtering rules.
 type DNSFilter struct {
 	rulesStorage         *filterlist.RuleStorage
@@ -125,6 +128,8 @@ type DNSFilter struct {
 	//
 	// TODO(e.burkov): Use upstream that configured in dnsforward instead.
 	resolver Resolver
+
+	hostCheckers []hostChecker
 }
 
 // Filter represents a filter list
@@ -218,8 +223,8 @@ func (r Reason) In(reasons ...Reason) bool {
 }
 
 // GetConfig - get configuration
-func (d *DNSFilter) GetConfig() RequestFilteringSettings {
-	c := RequestFilteringSettings{}
+func (d *DNSFilter) GetConfig() FilteringSettings {
+	c := FilteringSettings{}
 	// d.confLock.RLock()
 	c.SafeSearchEnabled = d.Config.SafeSearchEnabled
 	c.SafeBrowsingEnabled = d.Config.SafeBrowsingEnabled
@@ -374,122 +379,85 @@ func (r Reason) Matched() bool {
 }
 
 // CheckHostRules tries to match the host against filtering rules only.
-func (d *DNSFilter) CheckHostRules(host string, qtype uint16, setts *RequestFilteringSettings) (Result, error) {
+func (d *DNSFilter) CheckHostRules(host string, qtype uint16, setts *FilteringSettings) (Result, error) {
 	if !setts.FilteringEnabled {
 		return Result{}, nil
 	}
 
-	return d.matchHost(host, qtype, *setts)
+	return d.matchHost(host, qtype, setts)
 }
 
-// CheckHost tries to match the host against filtering rules, then
-// safebrowsing and parental control rules, if they are enabled.
-func (d *DNSFilter) CheckHost(host string, qtype uint16, setts *RequestFilteringSettings) (Result, error) {
-	// sometimes DNS clients will try to resolve ".", which is a request to get root servers
+// CheckHost tries to match the host against filtering rules, then safebrowsing
+// and parental control rules, if they are enabled.
+func (d *DNSFilter) CheckHost(
+	host string,
+	qtype uint16,
+	setts *FilteringSettings,
+) (res Result, err error) {
+	// Sometimes clients try to resolve ".", which is a request to get root
+	// servers.
 	if host == "" {
 		return Result{Reason: NotFilteredNotFound}, nil
 	}
+
 	host = strings.ToLower(host)
 
-	var result Result
-	var err error
-
-	// first - check rewrites, they have the highest priority
-	result = d.processRewrites(host, qtype)
-	if result.Reason == Rewritten {
-		return result, nil
+	res = d.processRewrites(host, qtype)
+	if res.Reason == Rewritten {
+		return res, nil
 	}
 
-	// Now check the hosts file -- do we have any rules for it?
-	// just like DNS rewrites, it has higher priority than filtering rules.
-	if d.Config.AutoHosts != nil {
-		matched := d.checkAutoHosts(host, qtype, &result)
-		if matched {
-			return result, nil
-		}
-	}
-
-	if setts.FilteringEnabled {
-		result, err = d.matchHost(host, qtype, *setts)
+	for _, hc := range d.hostCheckers {
+		res, err = hc.check(host, qtype, setts)
 		if err != nil {
-			return result, err
-		}
-		if result.Reason.Matched() {
-			return result, nil
-		}
-	}
-
-	// are there any blocked services?
-	if len(setts.ServicesRules) != 0 {
-		result = matchBlockedServicesRules(host, setts.ServicesRules)
-		if result.Reason.Matched() {
-			return result, nil
-		}
-	}
-
-	// browsing security web service
-	if setts.SafeBrowsingEnabled {
-		result, err = d.checkSafeBrowsing(host)
-		if err != nil {
-			log.Info("SafeBrowsing: failed: %v", err)
-			return Result{}, nil
-		}
-		if result.Reason.Matched() {
-			return result, nil
-		}
-	}
-
-	// parental control web service
-	if setts.ParentalEnabled {
-		result, err = d.checkParental(host)
-		if err != nil {
-			log.Printf("Parental: failed: %v", err)
-			return Result{}, nil
-		}
-		if result.Reason.Matched() {
-			return result, nil
-		}
-	}
-
-	// apply safe search if needed
-	if setts.SafeSearchEnabled {
-		result, err = d.checkSafeSearch(host)
-		if err != nil {
-			log.Info("SafeSearch: failed: %v", err)
-			return Result{}, nil
+			return Result{}, fmt.Errorf("%s: %w", hc.name, err)
 		}
 
-		if result.Reason.Matched() {
-			return result, nil
+		if res.Reason.Matched() {
+			return res, nil
 		}
 	}
 
 	return Result{}, nil
 }
 
-func (d *DNSFilter) checkAutoHosts(host string, qtype uint16, result *Result) (matched bool) {
+// checkAutoHosts compares the host against our autohosts table.  The err is
+// always nil, it is only there to make this a valid hostChecker function.
+func (d *DNSFilter) checkAutoHosts(
+	host string,
+	qtype uint16,
+	_ *FilteringSettings,
+) (res Result, err error) {
+	if d.Config.AutoHosts == nil {
+		return Result{}, nil
+	}
+
 	ips := d.Config.AutoHosts.Process(host, qtype)
 	if ips != nil {
-		result.Reason = RewrittenAutoHosts
-		result.IPList = ips
+		res = Result{
+			Reason: RewrittenAutoHosts,
+			IPList: ips,
+		}
 
-		return true
+		return res, nil
 	}
 
 	revHosts := d.Config.AutoHosts.ProcessReverse(host, qtype)
 	if len(revHosts) != 0 {
-		result.Reason = RewrittenAutoHosts
-
-		// TODO(a.garipov): Optimize this with a buffer.
-		result.ReverseHosts = make([]string, len(revHosts))
-		for i := range revHosts {
-			result.ReverseHosts[i] = revHosts[i] + "."
+		res = Result{
+			Reason: RewrittenAutoHosts,
 		}
 
-		return true
+		// TODO(a.garipov): Optimize this with a buffer.
+		res.ReverseHosts = make([]string, len(revHosts))
+		for i := range revHosts {
+			res.ReverseHosts[i] = revHosts[i] + "."
+		}
+
+		return res, nil
 	}
 
-	return false
+	return Result{}, nil
 }
 
 // Process rewrites table
@@ -547,10 +515,20 @@ func (d *DNSFilter) processRewrites(host string, qtype uint16) (res Result) {
 	return res
 }
 
-func matchBlockedServicesRules(host string, svcs []ServiceEntry) Result {
-	req := rules.NewRequestForHostname(host)
-	res := Result{}
+// matchBlockedServicesRules checks the host against the blocked services rules
+// in settings, if any.  The err is always nil, it is only there to make this
+// a valid hostChecker function.
+func matchBlockedServicesRules(
+	host string,
+	_ uint16,
+	setts *FilteringSettings,
+) (res Result, err error) {
+	svcs := setts.ServicesRules
+	if len(svcs) == 0 {
+		return Result{}, nil
+	}
 
+	req := rules.NewRequestForHostname(host)
 	for _, s := range svcs {
 		for _, rule := range s.Rules {
 			if rule.Match(req) {
@@ -567,11 +545,12 @@ func matchBlockedServicesRules(host string, svcs []ServiceEntry) Result {
 				log.Debug("blocked services: matched rule: %s  host: %s  service: %s",
 					ruleText, host, s.Name)
 
-				return res
+				return res, nil
 			}
 		}
 	}
-	return res
+
+	return res, nil
 }
 
 //
@@ -680,9 +659,66 @@ func (d *DNSFilter) matchHostProcessAllowList(host string, dnsres urlfilter.DNSR
 	return makeResult(rule, NotFilteredAllowList), nil
 }
 
+// matchHostProcessDNSResult processes the matched DNS filtering result.
+func (d *DNSFilter) matchHostProcessDNSResult(
+	qtype uint16,
+	dnsres urlfilter.DNSResult,
+) (res Result) {
+	if dnsres.NetworkRule != nil {
+		reason := FilteredBlockList
+		if dnsres.NetworkRule.Whitelist {
+			reason = NotFilteredAllowList
+		}
+
+		return makeResult(dnsres.NetworkRule, reason)
+	}
+
+	if qtype == dns.TypeA && dnsres.HostRulesV4 != nil {
+		rule := dnsres.HostRulesV4[0]
+		res = makeResult(rule, FilteredBlockList)
+		res.Rules[0].IP = rule.IP.To4()
+
+		return res
+	}
+
+	if qtype == dns.TypeAAAA && dnsres.HostRulesV6 != nil {
+		rule := dnsres.HostRulesV6[0]
+		res = makeResult(rule, FilteredBlockList)
+		res.Rules[0].IP = rule.IP.To16()
+
+		return res
+	}
+
+	if dnsres.HostRulesV4 != nil || dnsres.HostRulesV6 != nil {
+		// Question type doesn't match the host rules.  Return the first
+		// matched host rule, but without an IP address.
+		var rule rules.Rule
+		if dnsres.HostRulesV4 != nil {
+			rule = dnsres.HostRulesV4[0]
+		} else if dnsres.HostRulesV6 != nil {
+			rule = dnsres.HostRulesV6[0]
+		}
+
+		res = makeResult(rule, FilteredBlockList)
+		res.Rules[0].IP = net.IP{}
+
+		return res
+	}
+
+	return Result{}
+}
+
 // matchHost is a low-level way to check only if hostname is filtered by rules,
 // skipping expensive safebrowsing and parental lookups.
-func (d *DNSFilter) matchHost(host string, qtype uint16, setts RequestFilteringSettings) (res Result, err error) {
+func (d *DNSFilter) matchHost(
+	host string,
+	qtype uint16,
+	setts *FilteringSettings,
+) (res Result, err error) {
+	if !setts.FilteringEnabled {
+		return Result{}, nil
+	}
+
 	d.engineLock.RLock()
 	// Keep in mind that this lock must be held no just when calling Match()
 	//  but also while using the rules returned by it.
@@ -710,13 +746,12 @@ func (d *DNSFilter) matchHost(host string, qtype uint16, setts RequestFilteringS
 
 	dnsres, ok := d.filteringEngine.MatchRequest(ureq)
 
-	// Check DNS rewrites first, because the API there is a bit
-	// awkward.
+	// Check DNS rewrites first, because the API there is a bit awkward.
 	if dnsr := dnsres.DNSRewrites(); len(dnsr) > 0 {
 		res = d.processDNSRewrites(dnsr)
 		if res.Reason == RewrittenRule && res.CanonName == host {
-			// A rewrite of a host to itself.  Go on and
-			// try matching other things.
+			// A rewrite of a host to itself.  Go on and try
+			// matching other things.
 		} else {
 			return res, nil
 		}
@@ -724,55 +759,18 @@ func (d *DNSFilter) matchHost(host string, qtype uint16, setts RequestFilteringS
 		return Result{}, nil
 	}
 
-	if dnsres.NetworkRule != nil {
-		log.Debug("Filtering: found rule for host %q: %q  list_id: %d",
-			host, dnsres.NetworkRule.Text(), dnsres.NetworkRule.GetFilterListID())
-		reason := FilteredBlockList
-		if dnsres.NetworkRule.Whitelist {
-			reason = NotFilteredAllowList
-		}
-
-		return makeResult(dnsres.NetworkRule, reason), nil
+	res = d.matchHostProcessDNSResult(qtype, dnsres)
+	if len(res.Rules) > 0 {
+		r := res.Rules[0]
+		log.Debug(
+			"filtering: found rule %q for host %q, filter list id: %d",
+			r.Text,
+			host,
+			r.FilterListID,
+		)
 	}
 
-	if qtype == dns.TypeA && dnsres.HostRulesV4 != nil {
-		rule := dnsres.HostRulesV4[0] // note that we process only 1 matched rule
-		log.Debug("Filtering: found rule for host %q: %q  list_id: %d",
-			host, rule.Text(), rule.GetFilterListID())
-		res = makeResult(rule, FilteredBlockList)
-		res.Rules[0].IP = rule.IP.To4()
-
-		return res, nil
-	}
-
-	if qtype == dns.TypeAAAA && dnsres.HostRulesV6 != nil {
-		rule := dnsres.HostRulesV6[0] // note that we process only 1 matched rule
-		log.Debug("Filtering: found rule for host %q: %q  list_id: %d",
-			host, rule.Text(), rule.GetFilterListID())
-		res = makeResult(rule, FilteredBlockList)
-		res.Rules[0].IP = rule.IP
-
-		return res, nil
-	}
-
-	if dnsres.HostRulesV4 != nil || dnsres.HostRulesV6 != nil {
-		// Question Type doesn't match the host rules
-		// Return the first matched host rule, but without an IP address
-		var rule rules.Rule
-		if dnsres.HostRulesV4 != nil {
-			rule = dnsres.HostRulesV4[0]
-		} else if dnsres.HostRulesV6 != nil {
-			rule = dnsres.HostRulesV6[0]
-		}
-		log.Debug("Filtering: found rule for host %q: %q  list_id: %d",
-			host, rule.Text(), rule.GetFilterListID())
-		res = makeResult(rule, FilteredBlockList)
-		res.Rules[0].IP = net.IP{}
-
-		return res, nil
-	}
-
-	return Result{}, nil
+	return res, nil
 }
 
 // makeResult returns a properly constructed Result.
@@ -829,6 +827,26 @@ func New(c *Config, blockFilters []Filter) *DNSFilter {
 		resolver: resolver,
 	}
 
+	d.hostCheckers = []hostChecker{{
+		check: d.checkAutoHosts,
+		name:  "autohosts",
+	}, {
+		check: d.matchHost,
+		name:  "filtering",
+	}, {
+		check: matchBlockedServicesRules,
+		name:  "blocked services",
+	}, {
+		check: d.checkSafeBrowsing,
+		name:  "safe browsing",
+	}, {
+		check: d.checkParental,
+		name:  "parental",
+	}, {
+		check: d.checkSafeSearch,
+		name:  "safe search",
+	}}
+
 	err := d.initSecurityServices()
 	if err != nil {
 		log.Error("dnsfilter: initialize services: %s", err)
@@ -851,7 +869,7 @@ func New(c *Config, blockFilters []Filter) *DNSFilter {
 	d.BlockedServices = bsvcs
 
 	if blockFilters != nil {
-		err := d.initFiltering(nil, blockFilters)
+		err = d.initFiltering(nil, blockFilters)
 		if err != nil {
 			log.Error("Can't initialize filtering subsystem: %s", err)
 			d.Close()

@@ -3,6 +3,7 @@ package util
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"io/ioutil"
 	"os"
 	"runtime"
@@ -29,22 +30,27 @@ func LoadSystemRootCAs() *x509.CertPool {
 	for _, dir := range dirs {
 		fis, err := ioutil.ReadDir(dir)
 		if err != nil {
-			if !os.IsNotExist(err) {
-				log.Error("Opening directory: %s: %s", dir, err)
+			if !errors.Is(err, os.ErrNotExist) {
+				log.Error("opening directory: %q: %s", dir, err)
 			}
+
 			continue
 		}
+
 		rootsAdded := false
 		for _, fi := range fis {
-			data, err := ioutil.ReadFile(dir + "/" + fi.Name())
-			if err == nil && roots.AppendCertsFromPEM(data) {
+			var certData []byte
+			certData, err = ioutil.ReadFile(dir + "/" + fi.Name())
+			if err == nil && roots.AppendCertsFromPEM(certData) {
 				rootsAdded = true
 			}
 		}
+
 		if rootsAdded {
 			return roots
 		}
 	}
+
 	return nil
 }
 

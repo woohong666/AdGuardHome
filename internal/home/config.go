@@ -76,8 +76,8 @@ type configuration struct {
 
 // field ordering is important -- yaml fields will mirror ordering from here
 type dnsConfig struct {
-	BindHost net.IP `yaml:"bind_host"`
-	Port     int    `yaml:"port"`
+	BindHosts []net.IP `yaml:"bind_hosts"`
+	Port      int      `yaml:"port"`
 
 	// time interval for statistics (in days)
 	StatsInterval uint32 `yaml:"statistics_interval"`
@@ -93,6 +93,11 @@ type dnsConfig struct {
 	FilteringEnabled           bool             `yaml:"filtering_enabled"`       // whether or not use filter lists
 	FiltersUpdateIntervalHours uint32           `yaml:"filters_update_interval"` // time period to update filters (in hours)
 	DnsfilterConf              dnsfilter.Config `yaml:",inline"`
+
+	// AutohostTLD is the top-level domain used for known internal hosts.
+	// For example, a machine called "myhost" can be addressed as
+	// "myhost.lan" when AutohostTLD is "lan".
+	AutohostTLD string `yaml:"autohost_tld"`
 }
 
 type tlsConfigSettings struct {
@@ -101,7 +106,7 @@ type tlsConfigSettings struct {
 	ForceHTTPS      bool   `yaml:"force_https" json:"force_https,omitempty"`               // ForceHTTPS: if true, forces HTTP->HTTPS redirect
 	PortHTTPS       int    `yaml:"port_https" json:"port_https,omitempty"`                 // HTTPS port. If 0, HTTPS will be disabled
 	PortDNSOverTLS  int    `yaml:"port_dns_over_tls" json:"port_dns_over_tls,omitempty"`   // DNS-over-TLS port. If 0, DOT will be disabled
-	PortDNSOverQUIC uint16 `yaml:"port_dns_over_quic" json:"port_dns_over_quic,omitempty"` // DNS-over-QUIC port. If 0, DoQ will be disabled
+	PortDNSOverQUIC int    `yaml:"port_dns_over_quic" json:"port_dns_over_quic,omitempty"` // DNS-over-QUIC port. If 0, DoQ will be disabled
 
 	// PortDNSCrypt is the port for DNSCrypt requests.  If it's zero,
 	// DNSCrypt is disabled.
@@ -125,7 +130,7 @@ var config = configuration{
 	BetaBindPort: 0,
 	BindHost:     net.IP{0, 0, 0, 0},
 	DNS: dnsConfig{
-		BindHost:      net.IP{0, 0, 0, 0},
+		BindHosts:     []net.IP{{0, 0, 0, 0}},
 		Port:          53,
 		StatsInterval: 1,
 		FilteringConfig: dnsforward.FilteringConfig{
@@ -144,6 +149,7 @@ var config = configuration{
 		},
 		FilteringEnabled:           true, // whether or not use filter lists
 		FiltersUpdateIntervalHours: 24,
+		AutohostTLD:                "lan",
 	},
 	TLS: tlsConfigSettings{
 		PortHTTPS:       443,

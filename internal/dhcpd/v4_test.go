@@ -40,7 +40,7 @@ func TestV4_AddRemove_static(t *testing.T) {
 	require.Len(t, ls, 1)
 	assert.True(t, l.IP.Equal(ls[0].IP))
 	assert.Equal(t, l.HWAddr, ls[0].HWAddr)
-	assert.EqualValues(t, leaseExpireStatic, ls[0].Expiry.Unix())
+	assert.True(t, ls[0].IsStatic())
 
 	// Try to remove static lease.
 	assert.NotNil(t, s.RemoveStaticLease(Lease{
@@ -77,7 +77,8 @@ func TestV4_AddReplace(t *testing.T) {
 	}}
 
 	for i := range dynLeases {
-		s.addLease(&dynLeases[i])
+		err = s.addLease(&dynLeases[i])
+		require.Nil(t, err)
 	}
 
 	stLeases := []Lease{{
@@ -98,7 +99,7 @@ func TestV4_AddReplace(t *testing.T) {
 	for i, l := range ls {
 		assert.True(t, stLeases[i].IP.Equal(l.IP))
 		assert.Equal(t, stLeases[i].HWAddr, l.HWAddr)
-		assert.EqualValues(t, leaseExpireStatic, l.Expiry.Unix())
+		assert.True(t, l.IsStatic())
 	}
 }
 
@@ -128,13 +129,13 @@ func TestV4StaticLease_Get(t *testing.T) {
 	mac := net.HardwareAddr{0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA}
 
 	t.Run("discover", func(t *testing.T) {
-		var err error
+		var terr error
 
-		req, err = dhcpv4.NewDiscovery(mac)
-		require.Nil(t, err)
+		req, terr = dhcpv4.NewDiscovery(mac)
+		require.Nil(t, terr)
 
-		resp, err = dhcpv4.NewReplyFromRequest(req)
-		require.Nil(t, err)
+		resp, terr = dhcpv4.NewReplyFromRequest(req)
+		require.Nil(t, terr)
 		assert.Equal(t, 1, s.process(req, resp))
 	})
 	require.Nil(t, err)
@@ -212,28 +213,36 @@ func TestV4DynamicLease_Get(t *testing.T) {
 		require.Nil(t, err)
 		assert.Equal(t, 1, s.process(req, resp))
 	})
+
+	// Don't continue if we got any errors in the previous subtest.
 	require.Nil(t, err)
 
 	t.Run("offer", func(t *testing.T) {
 		assert.Equal(t, dhcpv4.MessageTypeOffer, resp.MessageType())
 		assert.Equal(t, mac, resp.ClientHWAddr)
-		assert.True(t, s.conf.RangeStart.Equal(resp.YourIPAddr))
-		assert.True(t, s.conf.GatewayIP.Equal(resp.Router()[0]))
-		assert.True(t, s.conf.GatewayIP.Equal(resp.ServerIdentifier()))
+
+		assert.Equal(t, s.conf.RangeStart, resp.YourIPAddr)
+		assert.Equal(t, s.conf.GatewayIP, resp.ServerIdentifier())
+
+		router := resp.Router()
+		require.Len(t, router, 1)
+		assert.Equal(t, s.conf.GatewayIP, router[0])
+
 		assert.Equal(t, s.conf.subnetMask, resp.SubnetMask())
 		assert.Equal(t, s.conf.leaseTime.Seconds(), resp.IPAddressLeaseTime(-1).Seconds())
 		assert.Equal(t, []byte("012"), resp.Options[uint8(dhcpv4.OptionFQDN)])
-		assert.True(t, net.IP{1, 2, 3, 4}.Equal(net.IP(resp.Options[uint8(dhcpv4.OptionRelayAgentInformation)])))
+
+		assert.Equal(t, net.IP{1, 2, 3, 4}, net.IP(resp.RelayAgentInfo().ToBytes()))
 	})
 
 	t.Run("request", func(t *testing.T) {
-		var err error
+		var terr error
 
-		req, err = dhcpv4.NewRequestFromOffer(resp)
-		require.Nil(t, err)
+		req, terr = dhcpv4.NewRequestFromOffer(resp)
+		require.Nil(t, terr)
 
-		resp, err = dhcpv4.NewReplyFromRequest(req)
-		require.Nil(t, err)
+		resp, terr = dhcpv4.NewReplyFromRequest(req)
+		require.Nil(t, terr)
 		assert.Equal(t, 1, s.process(req, resp))
 	})
 	require.Nil(t, err)
@@ -259,32 +268,4 @@ func TestV4DynamicLease_Get(t *testing.T) {
 		assert.True(t, net.IP{192, 168, 10, 100}.Equal(ls[0].IP))
 		assert.Equal(t, mac, ls[0].HWAddr)
 	})
-}
-
-func TestIP4InRange(t *testing.T) {
-	start := net.IP{192, 168, 10, 100}
-	stop := net.IP{192, 168, 10, 200}
-
-	testCases := []struct {
-		ip   net.IP
-		want bool
-	}{{
-		ip:   net.IP{192, 168, 10, 99},
-		want: false,
-	}, {
-		ip:   net.IP{192, 168, 11, 100},
-		want: false,
-	}, {
-		ip:   net.IP{192, 168, 11, 201},
-		want: false,
-	}, {
-		ip:   start,
-		want: true,
-	}}
-
-	for _, tc := range testCases {
-		t.Run(tc.ip.String(), func(t *testing.T) {
-			assert.Equal(t, tc.want, ip4InRange(start, stop, tc.ip))
-		})
-	}
 }

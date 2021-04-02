@@ -10,6 +10,7 @@ import (
 
 	"github.com/AdguardTeam/AdGuardHome/internal/dnsfilter"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestDNSForwardHTTTP_handleGetConfig(t *testing.T) {
@@ -22,8 +23,8 @@ func TestDNSForwardHTTTP_handleGetConfig(t *testing.T) {
 		CacheTime:             30,
 	}
 	forwardConf := ServerConfig{
-		UDPListenAddr: &net.UDPAddr{},
-		TCPListenAddr: &net.TCPAddr{},
+		UDPListenAddrs: []*net.UDPAddr{},
+		TCPListenAddrs: []*net.TCPAddr{},
 		FilteringConfig: FilteringConfig{
 			ProtectionEnabled: true,
 			UpstreamDNS:       []string{"8.8.8.8:53", "8.8.4.4:53"},
@@ -31,9 +32,10 @@ func TestDNSForwardHTTTP_handleGetConfig(t *testing.T) {
 		ConfigModified: func() {},
 	}
 	s := createTestServer(t, filterConf, forwardConf)
-	err := s.Start()
-	assert.Nil(t, err)
-	defer assert.Nil(t, s.Stop())
+	require.Nil(t, s.Start())
+	t.Cleanup(func() {
+		require.Nil(t, s.Stop())
+	})
 
 	defaultConf := s.conf
 
@@ -71,13 +73,14 @@ func TestDNSForwardHTTTP_handleGetConfig(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Cleanup(w.Body.Reset)
+
 			s.conf = tc.conf()
 			s.handleGetConfig(w, nil)
-			assert.Equal(t, tc.want, w.Body.String())
 
 			assert.Equal(t, "application/json", w.Header().Get("Content-Type"))
+			assert.Equal(t, tc.want, w.Body.String())
 		})
-		w.Body.Reset()
 	}
 }
 
@@ -91,8 +94,8 @@ func TestDNSForwardHTTTP_handleSetConfig(t *testing.T) {
 		CacheTime:             30,
 	}
 	forwardConf := ServerConfig{
-		UDPListenAddr: &net.UDPAddr{},
-		TCPListenAddr: &net.TCPAddr{},
+		UDPListenAddrs: []*net.UDPAddr{},
+		TCPListenAddrs: []*net.TCPAddr{},
 		FilteringConfig: FilteringConfig{
 			ProtectionEnabled: true,
 			UpstreamDNS:       []string{"8.8.8.8:53", "8.8.4.4:53"},
@@ -191,9 +194,14 @@ func TestDNSForwardHTTTP_handleSetConfig(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Cleanup(func() {
+				s.conf = defaultConf
+			})
+
 			rBody := ioutil.NopCloser(strings.NewReader(tc.req))
-			r, err := http.NewRequest(http.MethodPost, "http://example.com", rBody)
-			assert.Nil(t, err)
+			var r *http.Request
+			r, err = http.NewRequest(http.MethodPost, "http://example.com", rBody)
+			require.Nil(t, err)
 
 			s.handleSetConfig(w, r)
 			assert.Equal(t, tc.wantSet, w.Body.String())
@@ -203,6 +211,5 @@ func TestDNSForwardHTTTP_handleSetConfig(t *testing.T) {
 			assert.Equal(t, tc.wantGet, w.Body.String())
 			w.Body.Reset()
 		})
-		s.conf = defaultConf
 	}
 }

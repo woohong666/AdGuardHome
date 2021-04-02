@@ -11,8 +11,6 @@ type DHCPServer interface {
 	ResetLeases(leases []*Lease)
 	// GetLeases - get leases
 	GetLeases(flags int) []Lease
-	// GetLeasesRef - get reference to leases array
-	GetLeasesRef() []*Lease
 	// AddStaticLease - add a static lease
 	AddStaticLease(lease Lease) error
 	// RemoveStaticLease - remove a static lease
@@ -29,6 +27,8 @@ type DHCPServer interface {
 	Start() error
 	// Stop - stop server
 	Stop()
+
+	getLeasesRef() []*Lease
 }
 
 // V4ServerConf - server configuration
@@ -60,15 +60,20 @@ type V4ServerConf struct {
 	//     DEC_CODE ip IP_ADDR
 	Options []string `yaml:"options" json:"-"`
 
-	ipStart    net.IP        // starting IP address for dynamic leases
-	ipEnd      net.IP        // ending IP address for dynamic leases
+	ipRange *ipRange
+
 	leaseTime  time.Duration // the time during which a dynamic lease is considered valid
 	dnsIPAddrs []net.IP      // IPv4 addresses to return to DHCP clients as DNS server addresses
 	routerIP   net.IP        // value for Option Router
 	subnetMask net.IPMask    // value for Option SubnetMask
 	options    []dhcpOption
 
-	// Server calls this function when leases data changes
+	// notify is a way to signal to other components that leases have
+	// change.  notify must be called outside of locked sections, since the
+	// clients might want to get the new data.
+	//
+	// TODO(a.garipov): This is utter madness and must be refactored.  It
+	// just begs for deadlock bugs and other nastiness.
 	notify func(uint32)
 }
 
@@ -96,5 +101,5 @@ type V6ServerConf struct {
 
 type dhcpOption struct {
 	code uint8
-	val  []byte
+	data []byte
 }

@@ -2,18 +2,14 @@
 package dhcpd
 
 import (
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
 	"path/filepath"
 	"runtime"
-	"strconv"
-	"strings"
 	"time"
 
-	"github.com/AdguardTeam/AdGuardHome/internal/util"
 	"github.com/AdguardTeam/golibs/log"
 )
 
@@ -40,16 +36,23 @@ type Lease struct {
 	Expiry time.Time `json:"expires"`
 }
 
+// IsStatic returns true if the lease is static.
+//
+// TODO(a.garipov): Just make it a boolean field.
+func (l *Lease) IsStatic() (ok bool) {
+	return l != nil && l.Expiry.Unix() == leaseExpireStatic
+}
+
 // MarshalJSON implements the json.Marshaler interface for *Lease.
 func (l *Lease) MarshalJSON() ([]byte, error) {
 	var expiryStr string
-	if expiry := l.Expiry; expiry.Unix() != leaseExpireStatic {
+	if !l.IsStatic() {
 		// The front-end is waiting for RFC 3999 format of the time
 		// value.  It also shouldn't got an Expiry field for static
 		// leases.
 		//
 		// See https://github.com/AdguardTeam/AdGuardHome/issues/2692.
-		expiryStr = expiry.Format(time.RFC3339)
+		expiryStr = l.Expiry.Format(time.RFC3339)
 	}
 
 	type lease Lease
@@ -207,6 +210,7 @@ func Create(conf ServerConfig) *Server {
 func (s *Server) onNotify(flags uint32) {
 	if flags == LeaseChangedDBStore {
 		s.dbStore()
+
 		return
 	}
 
@@ -222,6 +226,7 @@ func (s *Server) notify(flags int) {
 	if len(s.onLeaseChanged) == 0 {
 		return
 	}
+
 	for _, f := range s.onLeaseChanged {
 		f(flags)
 	}
@@ -282,49 +287,4 @@ func (s *Server) FindMACbyIP(ip net.IP) net.HardwareAddr {
 // AddStaticLease - add static v4 lease
 func (s *Server) AddStaticLease(lease Lease) error {
 	return s.srv4.AddStaticLease(lease)
-}
-
-// Parse option string
-// Format:
-// CODE TYPE VALUE
-func parseOptionString(s string) (uint8, []byte) {
-	s = strings.TrimSpace(s)
-	scode := util.SplitNext(&s, ' ')
-	t := util.SplitNext(&s, ' ')
-	sval := util.SplitNext(&s, ' ')
-
-	code, err := strconv.Atoi(scode)
-	if err != nil || code <= 0 || code > 255 {
-		return 0, nil
-	}
-
-	var val []byte
-
-	switch t {
-	case "hex":
-		val, err = hex.DecodeString(sval)
-		if err != nil {
-			return 0, nil
-		}
-	case "ip":
-		ip := net.ParseIP(sval)
-		if ip == nil {
-			return 0, nil
-		}
-
-		// Most DHCP options require IPv4, so do not put the 16-byte
-		// version if we can.  Otherwise, the clients will receive weird
-		// data that looks like four IPv4 addresses.
-		//
-		// See https://github.com/AdguardTeam/AdGuardHome/issues/2688.
-		if ip4 := ip.To4(); ip4 != nil {
-			val = ip4
-		} else {
-			val = ip
-		}
-	default:
-		return 0, nil
-	}
-
-	return uint8(code), val
 }

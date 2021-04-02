@@ -66,10 +66,20 @@ method_const() {
 
 # underscores is a simple check against Go filenames with underscores.
 underscores() {
-	git ls-files '*_*.go' | { grep -F -e '_darwin.go' \
-		-e '_freebsd.go' -e '_linux.go' -e '_others.go' \
-		-e '_test.go' -e '_unix.go' -e '_windows.go' \
-		-v || exit 0; }
+	git ls-files '*_*.go' | {
+		grep -F\
+		-e '_big.go'\
+		-e '_darwin.go'\
+		-e '_freebsd.go'\
+		-e '_linux.go'\
+		-e '_little.go'\
+		-e '_others.go'\
+		-e '_test.go'\
+		-e '_unix.go'\
+		-e '_windows.go' \
+		-v\
+		|| exit 0
+	}
 }
 
 
@@ -118,6 +128,12 @@ exit_on_output() (
 
 
 
+# Constants
+
+readonly go_files='./main.go ./tools.go ./internal/'
+
+
+
 # Checks
 
 exit_on_output blocklist_imports
@@ -132,11 +148,12 @@ golint --set_exit_status ./...
 
 "$GO" vet ./...
 
-gocyclo --over 19 .
+# Here and below, don't use quotes to get word splitting.
+gocyclo --over 17 $go_files
 
-gosec --quiet .
+gosec --quiet $go_files
 
-ineffassign .
+ineffassign ./...
 
 unparam ./...
 
@@ -148,8 +165,7 @@ looppointer ./...
 
 nilness ./...
 
-# TODO(a.garipov): Enable shadow after fixing all of the shadowing.
-# shadow --strict ./...
+exit_on_output shadow --strict ./...
 
 # TODO(a.garipov): Enable errcheck fully after handling all errors,
 # including the deferred and generated ones, properly.  Also, perhaps,
